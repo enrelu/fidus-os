@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-from ai.gateway import AIGateway
+from ai.gateway import AIGateway, get_default_provider_config
 from ai.routes import get_ai_gateway
 from core.crypto import decrypt_secret
 from core.models import AIProviderConfig
@@ -213,3 +214,54 @@ def test_byok_gateway_connection_test_for_multiple_providers(
     assert test_gemini.status_code == 200
     assert test_gemini.json()["ok"] is True
     assert "key=AIzaMockGemini9999" in captured_requests[-1]["url"]
+
+
+@pytest.mark.asyncio
+async def test_byok_gateway_complete_reads_encrypted_config_from_db(
+    client: TestClient,
+    session: Session,
+    tenant_a: dict,
+) -> None:
+    raw_secret = "sk-openrouter-db-e2e-7777"
+    create_resp = client.post(
+        "/api/v1/ai/providers",
+        headers=tenant_a["headers"],
+        json={
+            "provider": "openrouter",
+            "model_name": "anthropic/claude-3.5-sonnet",
+            "api_key": raw_secret,
+            "is_default": True,
+        },
+    )
+    assert create_resp.status_code == 201
+
+    cfg = get_default_provider_config(session, tenant_a["tenant_id"])
+    assert cfg is not None
+    assert cfg.api_key_encrypted is not None
+    assert cfg.api_key_encrypted != raw_secret
+
+    seen_auth: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_auth.append(request.headers.get("authorization", ""))
+        body = json.loads(request.content.decode("utf-8"))
+        assert body["model"] == "anthropic/claude-3.5-sonnet"
+        return httpx.Response(
+            200,
+            json={
+                "model": "anthropic/claude-3.5-sonnet",
+                "choices": [{"message": {"content": "Resumen generado en EUR."}}],
+                "usage": {"total_tokens": 42},
+            },
+        )
+
+    gateway = AIGateway(transport=httpx.MockTransport(handler))
+    result = await gateway.complete(
+        cfg,
+        [{"role": "user", "content": "Resume esta cuenta."}],
+    )
+    assert seen_auth == [f"Bearer {raw_secret}"]
+    assert result.content == "Resumen generado en EUR."
+    assert result.provider == "openrouter"
+    assert result.usage == {"total_tokens": 42}
+

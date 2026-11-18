@@ -23,6 +23,8 @@ from core.models import (
     AgentActionStatus,
     AgentApiKey,
     Lead,
+    Opportunity,
+    Organization,
     Task,
     User,
     utc_now,
@@ -601,6 +603,144 @@ def reject_agent_action(
     return _to_public_action(action)
 
 
+def _validate_tenant_fk(
+    session: Session,
+    model_cls: Any,
+    fk_id: Optional[int],
+    tenant_id: int,
+    label: str,
+) -> None:
+    if fk_id is None:
+        return
+    exists = session.exec(
+        select(model_cls.id).where(model_cls.id == fk_id, model_cls.tenant_id == tenant_id)
+    ).first()
+    if exists is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Entidad '{label}' ({fk_id}) no encontrada en el tenant.",
+        )
+
+
+def _execute_create_task(
+    session: Session,
+    action: AgentAction,
+    tenant_id: int,
+    payload_data: dict[str, Any],
+) -> Optional[int]:
+    org_id = payload_data.get("organization_id")
+    if org_id is not None:
+        _validate_tenant_fk(session, Organization, int(org_id), tenant_id, "organization_id")
+
+    opp_id = payload_data.get("opportunity_id")
+    if opp_id is not None:
+        _validate_tenant_fk(session, Opportunity, int(opp_id), tenant_id, "opportunity_id")
+
+    task = Task(
+        tenant_id=tenant_id,
+        organization_id=int(org_id) if org_id is not None else None,
+        opportunity_id=int(opp_id) if opp_id is not None else None,
+        title=str(payload_data.get("title") or "Tarea generada por agente"),
+        description=payload_data.get("description"),
+        priority=str(payload_data.get("priority") or "medium"),
+        status="pending",
+    )
+    session.add(task)
+    session.flush()
+    return task.id
+
+
+def _execute_create_lead(
+    session: Session,
+    action: AgentAction,
+    tenant_id: int,
+    payload_data: dict[str, Any],
+) -> Optional[int]:
+    org_id = payload_data.get("organization_id")
+    if org_id is not None:
+        _validate_tenant_fk(session, Organization, int(org_id), tenant_id, "organization_id")
+
+    lead = Lead(
+        tenant_id=tenant_id,
+        organization_id=int(org_id) if org_id is not None else None,
+        full_name=str(payload_data.get("full_name") or "Lead generado por agente"),
+        email=payload_data.get("email"),
+        phone=payload_data.get("phone"),
+        company_name=payload_data.get("company_name"),
+        source=payload_data.get("source") or f"agent:{action.agent_name}",
+        notes=payload_data.get("notes"),
+    )
+    session.add(lead)
+    session.flush()
+    return lead.id
+
+
+def _execute_update_opportunity(
+    session: Session,
+    action: AgentAction,
+    tenant_id: int,
+    payload_data: dict[str, Any],
+) -> Optional[int]:
+    raw_opp_id = action.target_entity_id if action.target_entity_id is not None else payload_data.get("opportunity_id")
+    if raw_opp_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="La acción 'update_opportunity' requiere 'target_entity_id' u 'opportunity_id'.",
+        )
+    opp_id = int(raw_opp_id)
+    opp = session.exec(
+        select(Opportunity).where(
+            Opportunity.id == opp_id,
+            Opportunity.tenant_id == tenant_id,
+        )
+    ).first()
+    if opp is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Oportunidad {opp_id} no encontrada en el tenant.",
+        )
+
+    allowed_fields = {"stage", "amount_eur", "probability", "notes"}
+    updated = False
+    for field in allowed_fields:
+        if field in payload_data and payload_data[field] is not None:
+            value = payload_data[field]
+            if field == "amount_eur":
+                value = float(value)
+                if value < 0:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail="'amount_eur' debe ser mayor o igual a 0.",
+                    )
+            elif field == "probability":
+                value = int(value)
+                if value < 0 or value > 100:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                        detail="'probability' debe estar entre 0 y 100.",
+                    )
+            setattr(opp, field, value)
+            updated = True
+
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="La acción 'update_opportunity' debe incluir al menos un campo válido (stage, amount_eur, probability, notes).",
+        )
+
+    opp.updated_at = utc_now()
+    session.add(opp)
+    session.flush()
+    return opp.id
+
+
+_ACTION_EXECUTORS = {
+    "create_task": _execute_create_task,
+    "create_lead": _execute_create_lead,
+    "update_opportunity": _execute_update_opportunity,
+}
+
+
 @router.post("/agent-actions/{action_id}/execute", response_model=AgentActionPublic)
 def execute_agent_action(
     action_id: int,
@@ -621,31 +761,22 @@ def execute_agent_action(
             detail=f"Solo se pueden ejecutar acciones aprobadas (estado actual: '{action.status}').",
         )
 
-    payload_data = json.loads(action.payload_json or "{}")
-    created_entity_id: Optional[int] = action.target_entity_id
+    executor = _ACTION_EXECUTORS.get(action.action_type)
+    if executor is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Tipo de acción '{action.action_type}' no soportado para ejecución automática.",
+        )
 
-    if action.action_type == "create_task":
-        task = Task(
-            tenant_id=current_user.tenant_id,
-            title=str(payload_data.get("title") or "Tarea generada por agente"),
-            description=payload_data.get("description"),
-            priority=str(payload_data.get("priority") or "medium"),
-            status="pending",
-        )
-        session.add(task)
-        session.flush()
-        created_entity_id = task.id
-    elif action.action_type == "create_lead":
-        lead = Lead(
-            tenant_id=current_user.tenant_id,
-            full_name=str(payload_data.get("full_name") or "Lead generado por agente"),
-            email=payload_data.get("email"),
-            company_name=payload_data.get("company_name"),
-            source=payload_data.get("source") or f"agent:{action.agent_name}",
-        )
-        session.add(lead)
-        session.flush()
-        created_entity_id = lead.id
+    try:
+        payload_data = json.loads(action.payload_json or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El payload JSON de la acción es inválido.",
+        ) from exc
+
+    created_entity_id = executor(session, action, current_user.tenant_id, payload_data)
 
     now = utc_now()
     action.status = AgentActionStatus.EXECUTED.value

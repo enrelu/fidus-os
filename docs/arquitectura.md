@@ -43,8 +43,10 @@ FidusOS v2 nace como un CRM **Agent-First / AI-Ready** diseñado para pymes y em
 |  | core/auth.py       |  | crm/             |  | ai/           |  |
 |  | JWT & Tenant Guard |  | Entidades CRM    |  | BYOK Gateway  |  |
 |  +--------------------+  +------------------+  | AgentActions  |  |
-|                                                | AgentApiKeys  |  |
-|                                                +-------+-------+  |
+|  +------------------------------------------+  | AgentApiKeys  |  |
+|  | mcp_server/ (/mcp Streamable HTTP)       |  +-------+-------+  |
+|  | Auth AgentApiKey + Scopes + 6 Tools CRM  |          |          |
+|  +------------------------------------------+          |          |
 +--------------------------------------------------------+----------+
                                                          |
              +-------------------------------------------+
@@ -78,11 +80,35 @@ FidusOS v2 nace como un CRM **Agent-First / AI-Ready** diseñado para pymes y em
 ### Claves de agente (`AgentApiKey`)
 - Siguen el patrón estándar *prefix + hash*: el secreto completo se muestra una sola vez en el momento de su creación.
 - En base de datos se guardan `key_prefix` (para identificación visual) y `key_hash` (SHA-256).
-- Incluyen `scopes` para limitar qué acciones puede leer o proponer cada agente conectado.
+- Incluyen `scopes` para limitar qué acciones puede leer o proponer cada agente conectado (`crm:read`, `crm:write`, `actions:propose`).
 
 ---
 
-## 4. Ciclo de vida de `AgentAction`
+## 4. Servidor MCP nativo (`/mcp`)
+
+- Implementado sobre el SDK oficial `mcp` (`FastMCP` + `StreamableHTTPSessionManager` en modo *stateless* con respuestas JSON) y montado directamente en `/mcp` dentro de `backend/main.py` (más entrypoint opcional `python -m mcp_server.stdio`).
+- **Autenticación obligatoria**: acepta `Authorization: Bearer fos_ag_...` o `X-Agent-Api-Key: fos_ag_...`. El `tenant_id` se resuelve exclusivamente desde la clave en base de datos (`AgentApiKey`), verificando clave activa y tenant activo; ninguna herramienta MCP acepta `tenant_id` como parámetro.
+- **Permisos por herramienta**:
+  - `crm:read`: `buscar_crm`, `cuenta_360`, `listar_pendientes`.
+  - `crm:write`: `crear_o_actualizar_lead`, `registrar_interaccion` (siempre registrando `ActivityLog` con `actor_type="agent"`).
+  - `actions:propose`: `proponer_accion` (crea `AgentAction` en `pending_approval`).
+
+```json
+{
+  "mcpServers": {
+    "fidus-os": {
+      "url": "https://tu-instancia.ejemplo.es/mcp",
+      "headers": {
+        "Authorization": "Bearer fos_ag_TU_CLAVE_DE_AGENTE"
+      }
+    }
+  }
+}
+```
+
+---
+
+## 5. Ciclo de vida de `AgentAction`
 
 ```text
 [Agente propone acción] --> pending_approval
@@ -96,9 +122,11 @@ FidusOS v2 nace como un CRM **Agent-First / AI-Ready** diseñado para pymes y em
       executed  (registra ActivityLog con actor_type="agent" + actor humano aprobador)
 ```
 
+Los ejecutores soportados en `ai/routes.py` (`create_task`, `create_lead`, `update_opportunity`) validan estrictamente pertenencia al `tenant_id`, y cualquier `action_type` sin ejecutor registrado devuelve `422 Unprocessable Entity`.
+
 ---
 
-## 5. Migraciones y base de datos
+## 6. Migraciones y base de datos
 
 - **Desarrollo**: SQLite (`sqlite:///./fidus_dev.db`) para iteración rápida sin dependencias externas.
 - **Producción**: PostgreSQL mediante `DATABASE_URL` y migraciones versionadas con **Alembic** (`backend/core/db_migrations.py` y `backend/migrations/`).
