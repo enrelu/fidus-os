@@ -29,7 +29,7 @@ En lugar de acoplar funciones de IA opacas en un SaaS cerrado, FidusOS v2 sitúa
 - **Seguridad**: `cryptography` (Fernet), `PyJWT`, `bcrypt`
 - **IA / Gateway**: `httpx` asíncrono multi-proveedor (OpenAI, Anthropic, Gemini, OpenRouter, Mistral, Ollama / OpenAI-compatible)
 - **Testing**: `pytest` + `httpx` / `TestClient`
-- **Frontend** *(próximos hitos)*: React + TypeScript orientado a supervisión de agentes, aprobaciones *Human-in-the-Loop* y ajustes BYOK/MCP.
+- **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS v4 (supervisión *Human-in-the-Loop*, auditoría de actividad, ajustes BYOK/MCP y CRM operativo)
 
 ---
 
@@ -42,17 +42,21 @@ fidus-os/
 ├── docs/
 │   ├── arquitectura.md      # Arquitectura técnica, seguridad y flujo Agent-First
 │   └── roadmap.md           # Hoja de ruta por hitos
-└── backend/
-    ├── .env.example         # Plantilla de variables de entorno (sin secretos)
-    ├── alembic.ini          # Configuración de migraciones Alembic
-    ├── main.py              # Entrada principal FastAPI + montaje /mcp
-    ├── requirements.txt     # Dependencias Python 3.12
-    ├── core/                # Base de datos, migraciones, cifrado, auth y modelos
-    ├── ai/                  # Gateway BYOK multi-proveedor, rutas BYOK y acciones de agentes
-    ├── crm/                 # Endpoints base multi-tenant del CRM
-    ├── mcp_server/          # Servidor MCP nativo (/mcp Streamable HTTP + stdio)
-    ├── migrations/          # Historial de migraciones Alembic
-    └── tests/               # Suite de tests pytest
+├── backend/
+│   ├── .env.example         # Plantilla de variables de entorno (sin secretos)
+│   ├── alembic.ini          # Configuración de migraciones Alembic
+│   ├── main.py              # Entrada principal FastAPI + montaje /mcp
+│   ├── requirements.txt     # Dependencias Python 3.12
+│   ├── core/                # Base de datos, migraciones, cifrado, auth y modelos
+│   ├── ai/                  # Gateway BYOK multi-proveedor, rutas BYOK y acciones de agentes
+│   ├── crm/                 # Endpoints base multi-tenant del CRM
+│   ├── mcp_server/          # Servidor MCP nativo (/mcp Streamable HTTP + stdio)
+│   ├── migrations/          # Historial de migraciones Alembic
+│   └── tests/               # Suite de tests pytest
+└── frontend/
+    ├── package.json         # Dependencias React + TypeScript + Vite + Tailwind v4
+    ├── vite.config.ts       # Proxy /api y /mcp hacia http://127.0.0.1:8000
+    └── src/                 # Vistas HITL, Auditoría, Configuración IA (BYOK+MCP) y CRM
 ```
 
 ---
@@ -134,11 +138,27 @@ FIDUS_AGENT_API_KEY=fos_ag_TU_CLAVE_DE_AGENTE python -m mcp_server.stdio
 
 Herramientas MCP disponibles: `buscar_crm`, `cuenta_360`, `listar_pendientes`, `crear_o_actualizar_lead`, `registrar_interaccion` y `proponer_accion`.
 
-### 6. Ejecutar los tests
+### 6. Ejecutar los tests del backend
 
 ```bash
 cd backend
 pytest
+```
+
+### 7. Arrancar el Frontend (React + TypeScript)
+
+Con el backend levantado en `http://127.0.0.1:8000`:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+La interfaz web estará disponible en `http://127.0.0.1:5173` (con proxy automático de `/api` y `/mcp` hacia `http://127.0.0.1:8000`; opcionalmente puedes definir `VITE_API_BASE_URL` si apuntas a otro origen). Para generar el bundle de producción con verificación de tipos:
+
+```bash
+npm run build
 ```
 
 ---

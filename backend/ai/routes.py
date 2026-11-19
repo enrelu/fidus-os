@@ -741,6 +741,29 @@ _ACTION_EXECUTORS = {
 }
 
 
+def _run_action_execution(
+    session: Session,
+    action: AgentAction,
+    current_user: User,
+) -> int | None:
+    executor = _ACTION_EXECUTORS.get(action.action_type)
+    if executor is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Tipo de acción '{action.action_type}' no soportado para ejecución automática.",
+        )
+
+    try:
+        payload_data = json.loads(action.payload_json or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El payload JSON de la acción es inválido.",
+        ) from exc
+
+    return executor(session, action, current_user.tenant_id, payload_data)
+
+
 @router.post("/agent-actions/{action_id}/execute", response_model=AgentActionPublic)
 def execute_agent_action(
     action_id: int,
@@ -761,22 +784,7 @@ def execute_agent_action(
             detail=f"Solo se pueden ejecutar acciones aprobadas (estado actual: '{action.status}').",
         )
 
-    executor = _ACTION_EXECUTORS.get(action.action_type)
-    if executor is None:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Tipo de acción '{action.action_type}' no soportado para ejecución automática.",
-        )
-
-    try:
-        payload_data = json.loads(action.payload_json or "{}")
-    except json.JSONDecodeError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="El payload JSON de la acción es inválido.",
-        ) from exc
-
-    created_entity_id = executor(session, action, current_user.tenant_id, payload_data)
+    created_entity_id = _run_action_execution(session, action, current_user)
 
     now = utc_now()
     action.status = AgentActionStatus.EXECUTED.value
@@ -796,6 +804,73 @@ def execute_agent_action(
         details_json=action.payload_json,
     )
     session.add(log)
+    session.commit()
+    session.refresh(action)
+    return _to_public_action(action)
+
+
+@router.post("/agent-actions/{action_id}/approve-and-execute", response_model=AgentActionPublic)
+def approve_and_execute_agent_action(
+    action_id: int,
+    review: Optional[AgentActionReview] = None,
+    current_user: User = Depends(require_tenant_user),
+    session: Session = Depends(get_session),
+) -> AgentActionPublic:
+    action = session.exec(
+        select(AgentAction).where(
+            AgentAction.id == action_id,
+            AgentAction.tenant_id == current_user.tenant_id,
+        )
+    ).first()
+    if action is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Acción de agente no encontrada.")
+    if action.status != AgentActionStatus.PENDING_APPROVAL.value:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"La acción está en estado '{action.status}' y no puede aprobarse y ejecutarse.",
+        )
+
+    now = utc_now()
+    review_note = review.review_note if review else None
+
+    try:
+        created_entity_id = _run_action_execution(session, action, current_user)
+    except Exception:
+        session.rollback()
+        raise
+
+    action.status = AgentActionStatus.EXECUTED.value
+    action.reviewed_by_user_id = current_user.id
+    action.reviewed_at = now
+    action.review_note = review_note
+    action.target_entity_id = created_entity_id
+    action.updated_at = now
+    session.add(action)
+
+    approve_log = ActivityLog(
+        tenant_id=current_user.tenant_id,
+        actor_type=ActorType.HUMAN.value,
+        actor_name=current_user.full_name,
+        user_id=current_user.id,
+        model_used=None,
+        action="approve:agent_action",
+        entity_type="agent_action",
+        entity_id=action.id,
+        details_json=json.dumps({"review_note": review_note}, ensure_ascii=False),
+    )
+    exec_log = ActivityLog(
+        tenant_id=current_user.tenant_id,
+        actor_type=ActorType.AGENT.value,
+        actor_name=action.agent_name,
+        user_id=current_user.id,
+        model_used=action.model_used,
+        action=f"execute:{action.action_type}",
+        entity_type=action.target_entity_type,
+        entity_id=created_entity_id,
+        details_json=action.payload_json,
+    )
+    session.add(approve_log)
+    session.add(exec_log)
     session.commit()
     session.refresh(action)
     return _to_public_action(action)

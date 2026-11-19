@@ -365,3 +365,69 @@ def test_execute_create_lead_update_opportunity_and_unknown_action_type(
     ).json()
     assert still_approved["status"] == "approved"
 
+
+def test_approve_and_execute_atomic_behavior(
+    client: TestClient,
+    tenant_a: dict,
+) -> None:
+    # 1. Flujo exitoso en un solo clic
+    task_action = client.post(
+        "/api/v1/ai/agent-actions",
+        headers=tenant_a["headers"],
+        json={
+            "agent_name": "asistente-hitl",
+            "model_used": "gpt-4o-mini",
+            "action_type": "create_task",
+            "target_entity_type": "task",
+            "payload": {"title": "Llamar a cliente prioritario", "priority": "high"},
+        },
+    ).json()
+
+    resp = client.post(
+        f"/api/v1/ai/agent-actions/{task_action['id']}/approve-and-execute",
+        headers=tenant_a["headers"],
+        json={"review_note": "Aprobado en 1 clic"},
+    )
+    assert resp.status_code == 200, resp.text
+    done = resp.json()
+    assert done["status"] == "executed"
+    assert done["reviewed_by_user_id"] == tenant_a["user"]["id"]
+    assert done["review_note"] == "Aprobado en 1 clic"
+    assert done["target_entity_id"] is not None
+
+    tasks = client.get("/api/v1/crm/tasks", headers=tenant_a["headers"]).json()
+    assert any(t["id"] == done["target_entity_id"] for t in tasks)
+
+    # Volver a ejecutarlo devuelve 409
+    again = client.post(
+        f"/api/v1/ai/agent-actions/{task_action['id']}/approve-and-execute",
+        headers=tenant_a["headers"],
+    )
+    assert again.status_code == 409
+
+    # 2. Si el ejecutor falla (422), la acción debe permanecer en pending_approval sin inconsistencias
+    bad_action = client.post(
+        "/api/v1/ai/agent-actions",
+        headers=tenant_a["headers"],
+        json={
+            "agent_name": "asistente-hitl",
+            "action_type": "unsupported_action",
+            "target_entity_type": "task",
+            "payload": {"title": "No ejecutable"},
+        },
+    ).json()
+
+    failed = client.post(
+        f"/api/v1/ai/agent-actions/{bad_action['id']}/approve-and-execute",
+        headers=tenant_a["headers"],
+    )
+    assert failed.status_code == 422
+
+    refreshed = client.get(
+        f"/api/v1/ai/agent-actions/{bad_action['id']}",
+        headers=tenant_a["headers"],
+    ).json()
+    assert refreshed["status"] == "pending_approval"
+    assert refreshed["reviewed_by_user_id"] is None
+
+

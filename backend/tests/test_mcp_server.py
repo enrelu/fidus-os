@@ -439,3 +439,19 @@ def test_mcp_full_tools_flow_and_multi_tenant_isolation(
         "propose:update_opportunity",
         "execute:update_opportunity",
     }.issubset(actions_logged)
+
+    # 7. proponer_accion rechaza action_type no soportado con error inmediato
+    invalid_propose = _call_tool(
+        client,
+        mcp_headers_a,
+        "proponer_accion",
+        {
+            "action_type": "send_bulk_whatsapp",
+            "target_entity_type": "client",
+            "payload": {"message": "Hola"},
+        },
+        req_id=15,
+    )
+    assert invalid_propose.get("isError") is True
+    assert "no soportado" in invalid_propose["content"][0]["text"]
+

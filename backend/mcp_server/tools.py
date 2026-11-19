@@ -598,6 +598,9 @@ def registrar_interaccion(
         }
 
 
+_SUPPORTED_PROPOSED_ACTIONS = ("create_task", "create_lead", "update_opportunity")
+
+
 @mcp.tool()
 def proponer_accion(
     action_type: str,
@@ -608,7 +611,7 @@ def proponer_accion(
 ) -> dict[str, Any]:
     """Propone una AgentAction en estado `pending_approval` para revisión humana (Human-in-the-Loop).
 
-    Ejemplos de `action_type`: `create_task`, `create_lead`, `update_opportunity`.
+    `action_type` soportados: `create_task`, `create_lead`, `update_opportunity`.
     Requiere scope: `actions:propose`.
     """
     ctx = require_mcp_scope("actions:propose")
@@ -616,6 +619,11 @@ def proponer_accion(
     cleaned_entity_type = target_entity_type.strip()
     if not cleaned_action or not cleaned_entity_type:
         raise ValueError("'action_type' y 'target_entity_type' son obligatorios.")
+    if cleaned_action not in _SUPPORTED_PROPOSED_ACTIONS:
+        supported = ", ".join(_SUPPORTED_PROPOSED_ACTIONS)
+        raise ValueError(
+            f"Tipo de acción '{cleaned_action}' no soportado. Valores permitidos: {supported}."
+        )
 
     with open_mcp_db_session(app=ctx.app) as session:
         if target_entity_id is not None and cleaned_entity_type in _ENTITY_MODELS:

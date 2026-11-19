@@ -22,20 +22,21 @@ Hoja de ruta evolutiva de **FidusOS v2** hacia un CRM **Agent-First / AI-Ready**
 - Motor ejecutor blindado de `AgentAction` aprobadas (`create_task`, `create_lead`, `update_opportunity`) con rechazo `422` para acciones no soportadas y registro en `ActivityLog`.
 - Documentación de conexión para Claude, ChatGPT, Cursor y OpenClaw.
 
-## Hito 3 — Workers en segundo plano con BYOK (Redis + Colas) *(Siguiente)*
+## Hito 3 — Frontend React + TypeScript (Supervisión HITL, Auditoría y Ajustes) *(Completado)*
+- Interfaz SPA en `frontend/` con **React 18 + TypeScript + Vite + Tailwind CSS v4**.
+- Flujo completo de autenticación JWT (`/login`, `/registro`) con soporte de campos fiscales españoles opcionales y manejo de `PRELAUNCH_MODE`.
+- Bandeja principal de **Supervisión Human-in-the-Loop (`AgentAction`)** con filtros por estado, contador en tiempo real, previsualización clara del payload y aprobación+ejecución atómica en 1 clic (`POST /api/v1/ai/agent-actions/{id}/approve-and-execute`).
+- Vista de **Auditoría de Actividad (`ActivityLog`)** con filtros por actor (`human` / `agent`) y tipo de entidad.
+- Panel de **Configuración IA (BYOK + MCP)**: alta, edición, prueba de conexión y borrado de proveedores BYOK, más creación/revocación de `AgentApiKey` con copia única de la clave y snippet JSON listo para Claude, Cursor y OpenClaw.
+- **CRM Operativo** con 5 sub-vistas (Organizaciones con CIF/razón social, Contactos con consentimiento RGPD, Leads, Oportunidades en EUR y Tareas).
+
+## Hito 4 — Workers en segundo plano con BYOK (Redis + Colas) *(Siguiente)*
 - Integración con `REDIS_URL` para colas asíncronas por tenant usando el `AIProviderConfig` por defecto.
 - Casos de uso iniciales:
   - Resúmenes automáticos de actividad de cuentas y oportunidades.
   - Detección de señales de riesgo o estancamiento en el pipeline.
   - Borradores de seguimiento comercial propuestos como `AgentAction`.
   - Briefings diarios/semanales para responsables comerciales.
-
-## Hito 4 — Frontend React + TypeScript (Supervisión HITL y Ajustes)
-- Interfaz ligera y enfocada en:
-  - Bandeja de **aprobaciones Human-in-the-Loop** (`AgentAction`) con diff claro de la acción propuesta.
-  - Auditoría de actividad (`ActivityLog`) diferenciando acciones humanas y de agentes.
-  - Panel de configuración **BYOK** (alta, prueba de conexión y proveedor por defecto) y gestión de **MCP / `AgentApiKey`**.
-  - Vistas operativas del CRM (Organizaciones, Contactos, Leads, Oportunidades en EUR, Tareas).
 
 ## Hito 5 — Self-Hosting, Despliegue y Cumplimiento RGPD/LOPDGDD
 - `Dockerfile` y `docker-compose.yml` listos para despliegue *self-hosted* (FastAPI + PostgreSQL + Redis + Frontend).
