@@ -27,8 +27,15 @@ from core.models import (
     utc_now,
 )
 from crm.services import (
+    enrich_clients_for_tenant,
+    enrich_opportunities_for_tenant,
+    enrich_organizations_for_tenant,
     get_dashboard_analytics_for_tenant,
+    get_entity_360_for_tenant,
     get_today_priorities_for_tenant,
+    global_search_groups_for_tenant,
+    list_activities_for_tenant,
+    log_interaction_for_tenant,
 )
 
 router = APIRouter(prefix="/api/v1/crm", tags=["CRM"])
@@ -113,26 +120,27 @@ class OrganizationUpdate(BaseModel):
     notes: Optional[str] = None
 
 
-@router.get("/organizations", response_model=list[Organization])
+@router.get("/organizations")
 def list_organizations(
     current_user: User = Depends(require_tenant_user),
     session: Session = Depends(get_session),
-) -> list[Organization]:
-    return list(
+) -> list[dict[str, Any]]:
+    orgs = list(
         session.exec(
             select(Organization)
             .where(Organization.tenant_id == current_user.tenant_id)
             .order_by(Organization.id.desc())  # type: ignore[union-attr]
         ).all()
     )
+    return enrich_organizations_for_tenant(session, current_user.tenant_id, orgs)
 
 
-@router.post("/organizations", response_model=Organization, status_code=status.HTTP_201_CREATED)
+@router.post("/organizations", status_code=status.HTTP_201_CREATED)
 def create_organization(
     payload: OrganizationCreate,
     current_user: User = Depends(require_tenant_user),
     session: Session = Depends(get_session),
-) -> Organization:
+) -> dict[str, Any]:
     org = Organization(
         tenant_id=current_user.tenant_id,
         name=payload.name.strip(),
@@ -156,38 +164,48 @@ def create_organization(
     )
     session.commit()
     session.refresh(org)
-    return org
+    return enrich_organizations_for_tenant(session, current_user.tenant_id, [org])[0]
 
 
-@router.get("/organizations/{org_id}", response_model=Organization)
+@router.get("/organizations/{org_id}")
 def get_organization(
     org_id: int,
     current_user: User = Depends(require_tenant_user),
     session: Session = Depends(get_session),
-) -> Organization:
-    return _get_owned_or_404(session, Organization, org_id, current_user.tenant_id, "Organización")
+) -> dict[str, Any]:
+    org = _get_owned_or_404(session, Organization, org_id, current_user.tenant_id, "Organización")
+    return enrich_organizations_for_tenant(session, current_user.tenant_id, [org])[0]
 
 
-@router.patch("/organizations/{org_id}", response_model=Organization)
+@router.patch("/organizations/{org_id}")
 def update_organization(
     org_id: int,
     payload: OrganizationUpdate,
     current_user: User = Depends(require_tenant_user),
     session: Session = Depends(get_session),
-) -> Organization:
+) -> dict[str, Any]:
     org = _get_owned_or_404(session, Organization, org_id, current_user.tenant_id, "Organización")
     data = payload.model_dump(exclude_unset=True)
     if "cif" in data and data["cif"] is not None:
-        data["cif"] = data["cif"].strip().upper()
+        data["cif"] = data["cif"].strip().upper() or None
     if "email" in data and data["email"] is not None:
         data["email"] = str(data["email"])
     for key, value in data.items():
         setattr(org, key, value)
     org.updated_at = utc_now()
     session.add(org)
+    if data:
+        _record_human_activity(
+            session,
+            user=current_user,
+            action="update",
+            entity_type="organization",
+            entity_id=org.id,
+            details={"updated_fields": sorted(data.keys())},
+        )
     session.commit()
     session.refresh(org)
-    return org
+    return enrich_organizations_for_tenant(session, current_user.tenant_id, [org])[0]
 
 
 @router.delete("/organizations/{org_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
@@ -197,6 +215,37 @@ def delete_organization(
     session: Session = Depends(get_session),
 ) -> Response:
     org = _get_owned_or_404(session, Organization, org_id, current_user.tenant_id, "Organización")
+    # Desvincular referencias en cascada segura dentro del tenant
+    for cli in session.exec(
+        select(Client).where(Client.tenant_id == current_user.tenant_id, Client.organization_id == org_id)
+    ).all():
+        cli.organization_id = None
+        session.add(cli)
+    for ld in session.exec(
+        select(Lead).where(Lead.tenant_id == current_user.tenant_id, Lead.organization_id == org_id)
+    ).all():
+        ld.organization_id = None
+        session.add(ld)
+    for op in session.exec(
+        select(Opportunity).where(
+            Opportunity.tenant_id == current_user.tenant_id, Opportunity.organization_id == org_id
+        )
+    ).all():
+        op.organization_id = None
+        session.add(op)
+    for tk in session.exec(
+        select(Task).where(Task.tenant_id == current_user.tenant_id, Task.organization_id == org_id)
+    ).all():
+        tk.organization_id = None
+        session.add(tk)
+    _record_human_activity(
+        session,
+        user=current_user,
+        action="delete",
+        entity_type="organization",
+        entity_id=org.id,
+        details={"label": org.name},
+    )
     session.delete(org)
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -225,28 +274,30 @@ class ClientUpdate(BaseModel):
     job_title: Optional[str] = PydanticField(default=None, max_length=120)
     rgpd_consent: Optional[bool] = None
     notes: Optional[str] = None
+    potential: Optional[str] = PydanticField(default=None, max_length=20)
 
 
-@router.get("/clients", response_model=list[Client])
+@router.get("/clients")
 def list_clients(
     current_user: User = Depends(require_tenant_user),
     session: Session = Depends(get_session),
-) -> list[Client]:
-    return list(
+) -> list[dict[str, Any]]:
+    clients = list(
         session.exec(
             select(Client)
             .where(Client.tenant_id == current_user.tenant_id)
             .order_by(Client.id.desc())  # type: ignore[union-attr]
         ).all()
     )
+    return enrich_clients_for_tenant(session, current_user.tenant_id, clients)
 
 
-@router.post("/clients", response_model=Client, status_code=status.HTTP_201_CREATED)
+@router.post("/clients", status_code=status.HTTP_201_CREATED)
 def create_client(
     payload: ClientCreate,
     current_user: User = Depends(require_tenant_user),
     session: Session = Depends(get_session),
-) -> Client:
+) -> dict[str, Any]:
     _assert_fk_owned(session, Organization, payload.organization_id, current_user.tenant_id, "organization_id")
     client = Client(
         tenant_id=current_user.tenant_id,
@@ -270,40 +321,68 @@ def create_client(
     )
     session.commit()
     session.refresh(client)
-    return client
+    return enrich_clients_for_tenant(session, current_user.tenant_id, [client])[0]
 
 
-@router.get("/clients/{client_id}", response_model=Client)
+@router.get("/clients/{client_id}")
 def get_client(
     client_id: int,
     current_user: User = Depends(require_tenant_user),
     session: Session = Depends(get_session),
-) -> Client:
-    return _get_owned_or_404(session, Client, client_id, current_user.tenant_id, "Cliente")
+) -> dict[str, Any]:
+    client = _get_owned_or_404(session, Client, client_id, current_user.tenant_id, "Cliente")
+    return enrich_clients_for_tenant(session, current_user.tenant_id, [client])[0]
 
 
-@router.patch("/clients/{client_id}", response_model=Client)
+@router.patch("/clients/{client_id}")
 def update_client(
     client_id: int,
     payload: ClientUpdate,
     current_user: User = Depends(require_tenant_user),
     session: Session = Depends(get_session),
-) -> Client:
+) -> dict[str, Any]:
     client = _get_owned_or_404(session, Client, client_id, current_user.tenant_id, "Cliente")
     data = payload.model_dump(exclude_unset=True)
+    potential_val = data.pop("potential", None)
+    if potential_val is not None:
+        normalized_pot = potential_val.strip().lower()
+        if normalized_pot not in {"low", "medium", "high"}:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Potencial no válido. Usa 'low', 'medium' o 'high'.",
+            )
+        _record_human_activity(
+            session,
+            user=current_user,
+            action="potential_update",
+            entity_type="client",
+            entity_id=client.id,
+            details={"potential": normalized_pot},
+        )
     if "organization_id" in data:
         _assert_fk_owned(session, Organization, data["organization_id"], current_user.tenant_id, "organization_id")
     if "email" in data and data["email"] is not None:
         data["email"] = str(data["email"])
     if data.get("rgpd_consent") is True and not client.rgpd_consent:
         client.rgpd_consent_date = utc_now()
+    elif data.get("rgpd_consent") is False:
+        client.rgpd_consent_date = None
     for key, value in data.items():
         setattr(client, key, value)
     client.updated_at = utc_now()
     session.add(client)
+    if data:
+        _record_human_activity(
+            session,
+            user=current_user,
+            action="update",
+            entity_type="client",
+            entity_id=client.id,
+            details={"updated_fields": sorted(data.keys())},
+        )
     session.commit()
     session.refresh(client)
-    return client
+    return enrich_clients_for_tenant(session, current_user.tenant_id, [client])[0]
 
 
 @router.delete("/clients/{client_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
@@ -313,6 +392,26 @@ def delete_client(
     session: Session = Depends(get_session),
 ) -> Response:
     client = _get_owned_or_404(session, Client, client_id, current_user.tenant_id, "Cliente")
+    for op in session.exec(
+        select(Opportunity).where(
+            Opportunity.tenant_id == current_user.tenant_id, Opportunity.client_id == client_id
+        )
+    ).all():
+        op.client_id = None
+        session.add(op)
+    for tk in session.exec(
+        select(Task).where(Task.tenant_id == current_user.tenant_id, Task.client_id == client_id)
+    ).all():
+        tk.client_id = None
+        session.add(tk)
+    _record_human_activity(
+        session,
+        user=current_user,
+        action="delete",
+        entity_type="client",
+        entity_id=client.id,
+        details={"label": client.full_name},
+    )
     session.delete(client)
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -655,6 +754,21 @@ def delete_lead(
     session: Session = Depends(get_session),
 ) -> Response:
     lead = _get_owned_or_404(session, Lead, lead_id, current_user.tenant_id, "Lead")
+    for op in session.exec(
+        select(Opportunity).where(
+            Opportunity.tenant_id == current_user.tenant_id, Opportunity.lead_id == lead_id
+        )
+    ).all():
+        op.lead_id = None
+        session.add(op)
+    _record_human_activity(
+        session,
+        user=current_user,
+        action="delete",
+        entity_type="lead",
+        entity_id=lead.id,
+        details={"label": lead.full_name},
+    )
     session.delete(lead)
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -689,26 +803,27 @@ class OpportunityUpdate(BaseModel):
     notes: Optional[str] = None
 
 
-@router.get("/opportunities", response_model=list[Opportunity])
+@router.get("/opportunities")
 def list_opportunities(
     current_user: User = Depends(require_tenant_user),
     session: Session = Depends(get_session),
-) -> list[Opportunity]:
-    return list(
+) -> list[dict[str, Any]]:
+    opps = list(
         session.exec(
             select(Opportunity)
             .where(Opportunity.tenant_id == current_user.tenant_id)
             .order_by(Opportunity.id.desc())  # type: ignore[union-attr]
         ).all()
     )
+    return enrich_opportunities_for_tenant(session, current_user.tenant_id, opps)
 
 
-@router.post("/opportunities", response_model=Opportunity, status_code=status.HTTP_201_CREATED)
+@router.post("/opportunities", status_code=status.HTTP_201_CREATED)
 def create_opportunity(
     payload: OpportunityCreate,
     current_user: User = Depends(require_tenant_user),
     session: Session = Depends(get_session),
-) -> Opportunity:
+) -> dict[str, Any]:
     _assert_fk_owned(session, Organization, payload.organization_id, current_user.tenant_id, "organization_id")
     _assert_fk_owned(session, Client, payload.client_id, current_user.tenant_id, "client_id")
     _assert_fk_owned(session, Lead, payload.lead_id, current_user.tenant_id, "lead_id")
@@ -737,26 +852,28 @@ def create_opportunity(
     )
     session.commit()
     session.refresh(opp)
-    return opp
+    return enrich_opportunities_for_tenant(session, current_user.tenant_id, [opp])[0]
 
 
-@router.get("/opportunities/{opp_id}", response_model=Opportunity)
+@router.get("/opportunities/{opp_id}")
 def get_opportunity(
     opp_id: int,
     current_user: User = Depends(require_tenant_user),
     session: Session = Depends(get_session),
-) -> Opportunity:
-    return _get_owned_or_404(session, Opportunity, opp_id, current_user.tenant_id, "Oportunidad")
+) -> dict[str, Any]:
+    opp = _get_owned_or_404(session, Opportunity, opp_id, current_user.tenant_id, "Oportunidad")
+    return enrich_opportunities_for_tenant(session, current_user.tenant_id, [opp])[0]
 
 
-@router.patch("/opportunities/{opp_id}", response_model=Opportunity)
+@router.patch("/opportunities/{opp_id}")
 def update_opportunity(
     opp_id: int,
     payload: OpportunityUpdate,
     current_user: User = Depends(require_tenant_user),
     session: Session = Depends(get_session),
-) -> Opportunity:
+) -> dict[str, Any]:
     opp = _get_owned_or_404(session, Opportunity, opp_id, current_user.tenant_id, "Oportunidad")
+    previous_stage = opp.stage
     data = payload.model_dump(exclude_unset=True)
     if "organization_id" in data:
         _assert_fk_owned(session, Organization, data["organization_id"], current_user.tenant_id, "organization_id")
@@ -768,9 +885,23 @@ def update_opportunity(
         setattr(opp, key, value)
     opp.updated_at = utc_now()
     session.add(opp)
+    if data:
+        stage_changed = "stage" in data and data["stage"] != previous_stage
+        _record_human_activity(
+            session,
+            user=current_user,
+            action="stage_change" if stage_changed else "update",
+            entity_type="opportunity",
+            entity_id=opp.id,
+            details=(
+                {"from_stage": previous_stage, "to_stage": opp.stage}
+                if stage_changed
+                else {"updated_fields": sorted(data.keys())}
+            ),
+        )
     session.commit()
     session.refresh(opp)
-    return opp
+    return enrich_opportunities_for_tenant(session, current_user.tenant_id, [opp])[0]
 
 
 @router.delete("/opportunities/{opp_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
@@ -780,6 +911,19 @@ def delete_opportunity(
     session: Session = Depends(get_session),
 ) -> Response:
     opp = _get_owned_or_404(session, Opportunity, opp_id, current_user.tenant_id, "Oportunidad")
+    for tk in session.exec(
+        select(Task).where(Task.tenant_id == current_user.tenant_id, Task.opportunity_id == opp_id)
+    ).all():
+        tk.opportunity_id = None
+        session.add(tk)
+    _record_human_activity(
+        session,
+        user=current_user,
+        action="delete",
+        entity_type="opportunity",
+        entity_id=opp.id,
+        details={"label": opp.title},
+    )
     session.delete(opp)
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -882,6 +1026,7 @@ def update_task(
     session: Session = Depends(get_session),
 ) -> Task:
     task = _get_owned_or_404(session, Task, task_id, current_user.tenant_id, "Tarea")
+    previous_status = task.status
     data = payload.model_dump(exclude_unset=True)
     if "assigned_user_id" in data:
         _assert_fk_owned(session, User, data["assigned_user_id"], current_user.tenant_id, "assigned_user_id")
@@ -895,6 +1040,20 @@ def update_task(
         setattr(task, key, value)
     task.updated_at = utc_now()
     session.add(task)
+    if data:
+        status_changed = "status" in data and data["status"] != previous_status
+        _record_human_activity(
+            session,
+            user=current_user,
+            action="status_change" if status_changed else "update",
+            entity_type="task",
+            entity_id=task.id,
+            details=(
+                {"from_status": previous_status, "to_status": task.status}
+                if status_changed
+                else {"updated_fields": sorted(data.keys())}
+            ),
+        )
     session.commit()
     session.refresh(task)
     return task
@@ -907,30 +1066,118 @@ def delete_task(
     session: Session = Depends(get_session),
 ) -> Response:
     task = _get_owned_or_404(session, Task, task_id, current_user.tenant_id, "Tarea")
+    _record_human_activity(
+        session,
+        user=current_user,
+        action="delete",
+        entity_type="task",
+        entity_id=task.id,
+        details={"label": task.title},
+    )
     session.delete(task)
     session.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------------------------------------------------------
-# ActivityLog (Auditoría humanos y agentes)
+# ActivityLog (Feed cronológico y auditoría humanos/agentes)
 # ---------------------------------------------------------------------------
 
 
-@router.get("/activities", response_model=list[ActivityLog])
+@router.get("/activities")
 def list_activities(
     actor_type: Optional[ActorType] = Query(default=None),
     entity_type: Optional[str] = Query(default=None),
+    limit: int = Query(default=150, ge=1, le=500),
     current_user: User = Depends(require_tenant_user),
     session: Session = Depends(get_session),
-) -> list[ActivityLog]:
-    stmt = select(ActivityLog).where(ActivityLog.tenant_id == current_user.tenant_id)
-    if actor_type is not None:
-        stmt = stmt.where(ActivityLog.actor_type == actor_type.value)
-    if entity_type is not None:
-        stmt = stmt.where(ActivityLog.entity_type == entity_type)
-    stmt = stmt.order_by(ActivityLog.id.desc())  # type: ignore[union-attr]
-    return list(session.exec(stmt).all())
+) -> list[dict[str, Any]]:
+    return list_activities_for_tenant(
+        session,
+        current_user.tenant_id,
+        actor_type=actor_type.value if actor_type is not None else None,
+        entity_type=entity_type,
+        limit=limit,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fase 2: Búsqueda global, Ficha 360 e Interacciones humanas
+# ---------------------------------------------------------------------------
+
+
+@router.get("/search")
+def search_crm(
+    q: str = Query(default="", max_length=200),
+    limit: int = Query(default=6, ge=1, le=20),
+    current_user: User = Depends(require_tenant_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    return global_search_groups_for_tenant(
+        session,
+        current_user.tenant_id,
+        q,
+        limit=limit,
+    )
+
+
+@router.get("/entities/{entity_type}/{entity_id}/360")
+def get_entity_360(
+    entity_type: str,
+    entity_id: int,
+    current_user: User = Depends(require_tenant_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    try:
+        return get_entity_360_for_tenant(
+            session,
+            current_user.tenant_id,
+            entity_type,
+            entity_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+
+
+class InteractionCreate(BaseModel):
+    entity_type: str = PydanticField(min_length=1, max_length=40)
+    entity_id: int
+    channel: str = PydanticField(default="llamada", max_length=40)
+    summary: str = PydanticField(min_length=1, max_length=2000)
+    outcome: Optional[str] = PydanticField(default=None, max_length=500)
+
+
+@router.post("/interactions", status_code=status.HTTP_201_CREATED)
+def create_interaction(
+    payload: InteractionCreate,
+    current_user: User = Depends(require_tenant_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    etype = payload.entity_type.strip().lower()
+    if etype not in {"lead", "client", "organization", "opportunity"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="entity_type debe ser 'lead', 'client', 'organization' u 'opportunity'.",
+        )
+    try:
+        return log_interaction_for_tenant(
+            session,
+            current_user.tenant_id,
+            actor_type=ActorType.HUMAN.value,
+            actor_name=current_user.full_name,
+            channel=payload.channel,
+            entity_type=etype,
+            entity_id=payload.entity_id,
+            summary=payload.summary,
+            outcome=payload.outcome,
+            user_id=current_user.id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------

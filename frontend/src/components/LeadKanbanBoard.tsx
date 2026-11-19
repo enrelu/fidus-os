@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   DndContext,
   DragOverlay,
@@ -56,7 +57,13 @@ const KanbanCardContent: React.FC<{
     <div className="space-y-2">
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
-          <div className="truncate text-xs font-semibold text-[#121212]">{lead.full_name}</div>
+          <Link
+            to={`/lead/${lead.id}`}
+            onClick={(e) => e.stopPropagation()}
+            className="block truncate text-xs font-semibold text-[#121212] hover:text-[#0d5fea] hover:underline"
+          >
+            {lead.full_name}
+          </Link>
           <div className="truncate text-[11px] text-neutral-500">
             {lead.company_name || lead.email || "Sin empresa"}
           </div>

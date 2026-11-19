@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import {
+  Activity,
   BarChart3,
   Building2,
   CheckSquare,
@@ -20,6 +21,7 @@ import { useAuth } from "../context/AuthContext";
 import type { CopilotContext } from "../types/api";
 import { CopilotDrawer, type CopilotOpenDetail } from "./CopilotDrawer";
 import { HeaderInbox } from "./HeaderInbox";
+import { HeaderSearch } from "./HeaderSearch";
 
 interface LayoutProps {
   pendingCount: number;
@@ -79,6 +81,36 @@ const ROUTE_META: {
     title: "Tareas",
     subtitle: "Seguimientos, vencimientos y prioridades operativas",
     viewKey: "tasks",
+  },
+  {
+    path: "/feed",
+    title: "Actividad",
+    subtitle: "Feed cronológico de interacciones humanas y acciones IA",
+    viewKey: "feed",
+  },
+  {
+    path: "/lead/",
+    title: "Ficha 360 · Lead",
+    subtitle: "Contexto comercial, cualificación IA e historial de actividad",
+    viewKey: "lead_detail",
+  },
+  {
+    path: "/client/",
+    title: "Ficha 360 · Cliente",
+    subtitle: "Contacto, RGPD, oportunidades asociadas y cronología",
+    viewKey: "client_detail",
+  },
+  {
+    path: "/organization/",
+    title: "Ficha 360 · Organización",
+    subtitle: "Datos fiscales, contactos, pipeline EUR y actividad",
+    viewKey: "organization_detail",
+  },
+  {
+    path: "/opportunity/",
+    title: "Ficha 360 · Oportunidad",
+    subtitle: "Estado del trato, tareas vinculadas e interacciones",
+    viewKey: "opportunity_detail",
   },
   {
     path: "/settings",
@@ -150,6 +182,7 @@ export const Layout: React.FC<LayoutProps> = ({ pendingCount, children }) => {
     { to: "/clients", label: "Clientes", icon: Users },
     { to: "/organizations", label: "Organizaciones", icon: Building2 },
     { to: "/tasks", label: "Tareas", icon: CheckSquare },
+    { to: "/feed", label: "Actividad", icon: Activity },
   ];
 
   return (
@@ -310,6 +343,7 @@ export const Layout: React.FC<LayoutProps> = ({ pendingCount, children }) => {
           </div>
 
           <div className="flex items-center gap-2">
+            <HeaderSearch />
             <HeaderInbox pendingCount={pendingCount} />
 
             <button

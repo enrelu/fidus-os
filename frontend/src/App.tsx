@@ -4,12 +4,17 @@ import { Loader2 } from "lucide-react";
 import { aiApi } from "./api/client";
 import { Layout } from "./components/Layout";
 import { AuthProvider, useAuth } from "./context/AuthContext";
-import { CrmPage } from "./pages/CrmPage";
+import { ClientsPage } from "./pages/ClientsPage";
 import { DashboardPage } from "./pages/DashboardPage";
+import { EntityDetailPage } from "./pages/EntityDetailPage";
+import { FeedPage } from "./pages/FeedPage";
 import { LeadsPage } from "./pages/LeadsPage";
 import { LoginPage } from "./pages/LoginPage";
+import { OpportunitiesPage } from "./pages/OpportunitiesPage";
+import { OrganizationsPage } from "./pages/OrganizationsPage";
 import { RegisterPage } from "./pages/RegisterPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { TasksPage } from "./pages/TasksPage";
 import { TodayPage } from "./pages/TodayPage";
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -114,10 +119,23 @@ const AppRoutes: React.FC = () => {
       <Route path="/today" element={withShell(<TodayPage />)} />
       <Route path="/dashboard" element={withShell(<DashboardPage />)} />
       <Route path="/leads" element={withShell(<LeadsPage />)} />
-      <Route path="/opportunities" element={withShell(<CrmPage fixedTab="opportunities" />)} />
-      <Route path="/clients" element={withShell(<CrmPage fixedTab="clients" />)} />
-      <Route path="/organizations" element={withShell(<CrmPage fixedTab="organizations" />)} />
-      <Route path="/tasks" element={withShell(<CrmPage fixedTab="tasks" />)} />
+      <Route path="/opportunities" element={withShell(<OpportunitiesPage />)} />
+      <Route path="/clients" element={withShell(<ClientsPage />)} />
+      <Route path="/organizations" element={withShell(<OrganizationsPage />)} />
+      <Route path="/tasks" element={withShell(<TasksPage />)} />
+      <Route path="/feed" element={withShell(<FeedPage />)} />
+
+      <Route path="/lead/:id" element={withShell(<EntityDetailPage entityType="lead" />)} />
+      <Route path="/client/:id" element={withShell(<EntityDetailPage entityType="client" />)} />
+      <Route
+        path="/organization/:id"
+        element={withShell(<EntityDetailPage entityType="organization" />)}
+      />
+      <Route
+        path="/opportunity/:id"
+        element={withShell(<EntityDetailPage entityType="opportunity" />)}
+      />
+
       <Route
         path="/settings"
         element={withShell(<SettingsPage onPendingCountChange={setPendingCount} />)}

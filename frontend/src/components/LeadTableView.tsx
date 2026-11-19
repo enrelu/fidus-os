@@ -1,4 +1,5 @@
 import React, { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import { ArrowDown, ArrowUp, ArrowUpDown, ArrowRightCircle, Pencil, Sparkles, Trash2 } from "lucide-react";
 import type { Lead } from "../types/api";
 import { formatDateTimeEs } from "../utils/format";
@@ -149,7 +150,11 @@ export const LeadTableView: React.FC<LeadTableViewProps> = ({
 
               return (
                 <tr key={lead.id} className="hover:bg-[#f7f7f8]/70 transition">
-                  <td className="px-4 py-3 font-semibold text-[#121212]">{lead.full_name}</td>
+                  <td className="px-4 py-3 font-semibold text-[#121212]">
+                    <Link to={`/lead/${lead.id}`} className="hover:text-[#0d5fea] hover:underline">
+                      {lead.full_name}
+                    </Link>
+                  </td>
                   <td className="px-4 py-3 text-neutral-700">{lead.company_name || "—"}</td>
                   <td className="px-4 py-3 text-neutral-600">
                     <div>{lead.email || "—"}</div>

@@ -12,10 +12,15 @@ import type {
   AIProviderUpdatePayload,
   Client,
   ClientPayload,
+  ClientUpdatePayload,
   ConnectionTestResponse,
   CopilotChatPayload,
   CopilotChatResponse,
   DashboardAnalyticsResponse,
+  Entity360Response,
+  Entity360Type,
+  GlobalSearchResponse,
+  InteractionCreatePayload,
   Lead,
   LeadConvertRequest,
   LeadConvertResponse,
@@ -216,15 +221,31 @@ export const crmApi = {
     return request<DashboardAnalyticsResponse>(`/api/v1/crm/analytics/dashboard${qs ? `?${qs}` : ""}`);
   },
 
-  listActivities: (params?: { actor_type?: ActorType; entity_type?: string }) => {
+  listActivities: (params?: { actor_type?: ActorType; entity_type?: string; limit?: number }) => {
     const search = new URLSearchParams();
     if (params?.actor_type) search.set("actor_type", params.actor_type);
     if (params?.entity_type) search.set("entity_type", params.entity_type);
+    if (params?.limit) search.set("limit", String(params.limit));
     const qs = search.toString();
     return request<ActivityLog[]>(`/api/v1/crm/activities${qs ? `?${qs}` : ""}`);
   },
 
+  search: (q: string, limit = 6) => {
+    const params = new URLSearchParams({ q, limit: String(limit) });
+    return request<GlobalSearchResponse>(`/api/v1/crm/search?${params.toString()}`);
+  },
+
+  getEntity360: (entityType: Entity360Type, entityId: number) =>
+    request<Entity360Response>(`/api/v1/crm/entities/${entityType}/${entityId}/360`),
+
+  createInteraction: (payload: InteractionCreatePayload) =>
+    request<ActivityLog>("/api/v1/crm/interactions", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+
   listOrganizations: () => request<Organization[]>("/api/v1/crm/organizations"),
+  getOrganization: (id: number) => request<Organization>(`/api/v1/crm/organizations/${id}`),
   createOrganization: (payload: OrganizationPayload) =>
     request<Organization>("/api/v1/crm/organizations", {
       method: "POST",
@@ -239,12 +260,13 @@ export const crmApi = {
     request<void>(`/api/v1/crm/organizations/${id}`, { method: "DELETE" }),
 
   listClients: () => request<Client[]>("/api/v1/crm/clients"),
+  getClient: (id: number) => request<Client>(`/api/v1/crm/clients/${id}`),
   createClient: (payload: ClientPayload) =>
     request<Client>("/api/v1/crm/clients", {
       method: "POST",
       body: JSON.stringify(payload),
     }),
-  updateClient: (id: number, payload: Partial<ClientPayload>) =>
+  updateClient: (id: number, payload: ClientUpdatePayload) =>
     request<Client>(`/api/v1/crm/clients/${id}`, {
       method: "PATCH",
       body: JSON.stringify(payload),
@@ -253,6 +275,7 @@ export const crmApi = {
     request<void>(`/api/v1/crm/clients/${id}`, { method: "DELETE" }),
 
   listLeads: () => request<Lead[]>("/api/v1/crm/leads"),
+  getLead: (id: number) => request<Lead>(`/api/v1/crm/leads/${id}`),
   createLead: (payload: LeadPayload) =>
     request<Lead>("/api/v1/crm/leads", {
       method: "POST",
@@ -272,6 +295,7 @@ export const crmApi = {
     request<void>(`/api/v1/crm/leads/${id}`, { method: "DELETE" }),
 
   listOpportunities: () => request<Opportunity[]>("/api/v1/crm/opportunities"),
+  getOpportunity: (id: number) => request<Opportunity>(`/api/v1/crm/opportunities/${id}`),
   createOpportunity: (payload: OpportunityPayload) =>
     request<Opportunity>("/api/v1/crm/opportunities", {
       method: "POST",
