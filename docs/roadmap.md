@@ -30,15 +30,16 @@ Hoja de ruta evolutiva de **FidusOS v2** hacia un CRM **Agent-First / AI-Ready**
 - Panel de **Configuración IA (BYOK + MCP)**: alta, edición, prueba de conexión y borrado de proveedores BYOK, más creación/revocación de `AgentApiKey` con copia única de la clave y snippet JSON listo para Claude, Cursor y OpenClaw.
 - **CRM Operativo** con 5 sub-vistas (Organizaciones con CIF/razón social, Contactos con consentimiento RGPD, Leads, Oportunidades en EUR y Tareas).
 
-## Hito 4 — Workers en segundo plano con BYOK (Redis + Colas) *(Siguiente)*
-- Integración con `REDIS_URL` para colas asíncronas por tenant usando el `AIProviderConfig` por defecto.
-- Casos de uso iniciales:
-  - Resúmenes automáticos de actividad de cuentas y oportunidades.
-  - Detección de señales de riesgo o estancamiento en el pipeline.
-  - Borradores de seguimiento comercial propuestos como `AgentAction`.
-  - Briefings diarios/semanales para responsables comerciales.
+## Hito 4 — Self-Hosted (`docker-compose`) + Publicación Open-Core *(Completado)*
+- Orquestación completa en [`docker-compose.yml`](../docker-compose.yml) con **5 servicios**: `postgres` (PostgreSQL 16), `redis` (Redis 7), `api` (FastAPI + `/mcp` con migraciones automáticas), `worker` (`python -m worker` con heartbeat y cola `fidus:jobs`) y `web` (React + Nginx proxy para `/api` y `/mcp`).
+- Dockerfiles de producción (`backend/Dockerfile` con usuario no-root `fidus` y `frontend/Dockerfile` multi-stage Node 22 → Nginx 1.27).
+- Validación estricta de claves (`ENCRYPTION_KEY` y `JWT_SECRET_KEY`) en `ENVIRONMENT=production` para impedir arranques inseguros.
+- Guía completa de despliegue en [`docs/self-hosting.md`](self-hosting.md), [`SECURITY.md`](../SECURITY.md), [`CONTRIBUTING.md`](../CONTRIBUTING.md) y licencia **AGPLv3** ([`LICENSE`](../LICENSE)).
 
-## Hito 5 — Self-Hosting, Despliegue y Cumplimiento RGPD/LOPDGDD
-- `Dockerfile` y `docker-compose.yml` listos para despliegue *self-hosted* (FastAPI + PostgreSQL + Redis + Frontend).
-- Herramientas de exportación y borrado RGPD/LOPDGDD por cliente y tenant.
-- Políticas de retención de `ActivityLog` y auditoría ampliada.
+## Hito 5 — Motor Proactivo de Agentes (Watchers + Radar con BYOK) y Cumplimiento RGPD Ampliado *(Siguiente)*
+- Evolución del worker en Redis (`fidus:jobs`) usando el `AIProviderConfig` por defecto de cada tenant:
+  - *Watchers* por evento y *Radar Comercial* programado para detectar oportunidades estancadas o señales de riesgo.
+  - Ingesta de notas libres y resúmenes automáticos de cuentas/oportunidades.
+  - Borradores de seguimiento comercial propuestos como `AgentAction` (siempre bajo supervisión HITL).
+  - Briefings diarios/semanales para responsables comerciales.
+- Herramientas de exportación y borrado RGPD/LOPDGDD por cliente y tenant, junto con políticas de retención de `ActivityLog`.

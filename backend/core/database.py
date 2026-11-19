@@ -11,9 +11,20 @@ from sqlmodel import Session, SQLModel, create_engine
 from core.config import get_settings
 
 
+def normalize_database_url(database_url: str) -> str:
+    """Normaliza URLs PostgreSQL para usar el driver psycopg v3 incluido en requirements.txt."""
+    cleaned = database_url.strip()
+    if cleaned.startswith("postgres://"):
+        return "postgresql+psycopg://" + cleaned[len("postgres://") :]
+    if cleaned.startswith("postgresql://"):
+        return "postgresql+psycopg://" + cleaned[len("postgresql://") :]
+    return cleaned
+
+
 def _build_engine(database_url: str) -> Engine:
-    connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
-    return create_engine(database_url, echo=False, pool_pre_ping=True, connect_args=connect_args)
+    normalized = normalize_database_url(database_url)
+    connect_args = {"check_same_thread": False} if normalized.startswith("sqlite") else {}
+    return create_engine(normalized, echo=False, pool_pre_ping=True, connect_args=connect_args)
 
 
 @lru_cache(maxsize=4)

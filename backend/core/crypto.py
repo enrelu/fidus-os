@@ -8,7 +8,7 @@ from typing import Optional
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from core.config import get_settings
+from core.config import get_settings, is_placeholder_secret
 
 
 class CryptoError(RuntimeError):
@@ -17,7 +17,7 @@ class CryptoError(RuntimeError):
 
 def get_fernet() -> Fernet:
     raw_key = get_settings().ENCRYPTION_KEY.strip()
-    if not raw_key or raw_key.startswith("CAMBIAR_"):
+    if is_placeholder_secret(raw_key):
         raise CryptoError(
             "ENCRYPTION_KEY no configurada. Genera una clave Fernet válida con: "
             "python -c \"from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())\""

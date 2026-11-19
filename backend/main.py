@@ -21,6 +21,7 @@ def create_app() -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        settings.validate_runtime_security()
         if settings.ENVIRONMENT.lower() == "development":
             init_db()
         async with mcp_session_manager.run():

@@ -23,13 +23,14 @@ En lugar de acoplar funciones de IA opacas en un SaaS cerrado, FidusOS v2 sitúa
 
 ## Stack tecnológico
 
-- **Backend**: Python 3.12 · FastAPI · SQLModel · SQLAlchemy · Alembic
+- **Backend**: Python 3.12 · FastAPI · SQLModel · SQLAlchemy · Alembic · Worker Redis (`fidus:jobs`)
 - **MCP**: SDK oficial `mcp` (Streamable HTTP en `/mcp` + entrypoint `stdio` opcional)
-- **Base de datos**: SQLite (desarrollo local) / PostgreSQL (producción)
+- **Base de datos y colas**: PostgreSQL 16 (producción / Docker) · SQLite (desarrollo local) · Redis 7
 - **Seguridad**: `cryptography` (Fernet), `PyJWT`, `bcrypt`
 - **IA / Gateway**: `httpx` asíncrono multi-proveedor (OpenAI, Anthropic, Gemini, OpenRouter, Mistral, Ollama / OpenAI-compatible)
 - **Testing**: `pytest` + `httpx` / `TestClient`
 - **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS v4 (supervisión *Human-in-the-Loop*, auditoría de actividad, ajustes BYOK/MCP y CRM operativo)
+- **Self-Hosting**: Docker + Docker Compose v2 + Nginx (proxy inverso para SPA, `/api/` y `/mcp`)
 
 ---
 
@@ -38,26 +39,58 @@ En lugar de acoplar funciones de IA opacas en un SaaS cerrado, FidusOS v2 sitúa
 ```text
 fidus-os/
 ├── LICENSE                  # Licencia AGPLv3
+├── SECURITY.md              # Política de seguridad y reporte responsable
+├── CONTRIBUTING.md          # Guía de contribución open-core
 ├── README.md
+├── .env.example             # Plantilla de variables para Docker Compose (sin secretos)
+├── docker-compose.yml       # Stack completo: postgres, redis, api, worker y web
 ├── docs/
 │   ├── arquitectura.md      # Arquitectura técnica, seguridad y flujo Agent-First
-│   └── roadmap.md           # Hoja de ruta por hitos
+│   ├── roadmap.md           # Hoja de ruta por hitos
+│   └── self-hosting.md      # Guía de despliegue VPS, HTTPS, backups y hardening
 ├── backend/
-│   ├── .env.example         # Plantilla de variables de entorno (sin secretos)
+│   ├── .env.example         # Plantilla local de desarrollo backend
+│   ├── Dockerfile           # Imagen no-root Python 3.12 (API + Worker)
+│   ├── entrypoint.sh        # Validación de claves en producción + alembic upgrade head
 │   ├── alembic.ini          # Configuración de migraciones Alembic
 │   ├── main.py              # Entrada principal FastAPI + montaje /mcp
+│   ├── worker.py            # Worker base Redis (heartbeat + cola fidus:jobs)
 │   ├── requirements.txt     # Dependencias Python 3.12
 │   ├── core/                # Base de datos, migraciones, cifrado, auth y modelos
 │   ├── ai/                  # Gateway BYOK multi-proveedor, rutas BYOK y acciones de agentes
 │   ├── crm/                 # Endpoints base multi-tenant del CRM
 │   ├── mcp_server/          # Servidor MCP nativo (/mcp Streamable HTTP + stdio)
 │   ├── migrations/          # Historial de migraciones Alembic
+│   ├── scripts/             # Utilidades manuales (p. ej. seed_demo.py bajo demanda)
 │   └── tests/               # Suite de tests pytest
 └── frontend/
+    ├── Dockerfile           # Multi-stage Node 22 -> Nginx 1.27
+    ├── nginx.conf           # Proxy inverso /api, /mcp, /health + SPA fallback
     ├── package.json         # Dependencias React + TypeScript + Vite + Tailwind v4
     ├── vite.config.ts       # Proxy /api y /mcp hacia http://127.0.0.1:8000
     └── src/                 # Vistas HITL, Auditoría, Configuración IA (BYOK+MCP) y CRM
 ```
+
+---
+
+## Despliegue rápido con Docker Compose (Self-Hosted)
+
+La forma recomendada de desplegar **FidusOS v2** completo (PostgreSQL 16 + Redis 7 + API/MCP + Worker + Frontend Nginx) desde cero:
+
+```bash
+cp .env.example .env
+# Genera ENCRYPTION_KEY y JWT_SECRET_KEY y sustituye los placeholders en .env:
+python3 -c "from cryptography.fernet import Fernet; print('ENCRYPTION_KEY=' + Fernet.generate_key().decode())"
+python3 -c "import secrets; print('JWT_SECRET_KEY=' + secrets.token_urlsafe(48))"
+
+docker compose up -d --build
+```
+
+- **Frontend web**: `http://localhost:3000`
+- **API / Swagger**: `http://localhost:8000/docs`
+- **Servidor MCP (vía Nginx)**: `http://localhost:3000/mcp`
+
+Consulta la guía completa de producción, HTTPS para `/mcp`, backups y *hardening* en [docs/self-hosting.md](docs/self-hosting.md).
 
 ---
 
@@ -166,7 +199,10 @@ npm run build
 ## Documentación
 
 - [Arquitectura de FidusOS v2](docs/arquitectura.md)
+- [Guía Self-Hosted (Docker Compose + HTTPS)](docs/self-hosting.md)
 - [Roadmap de desarrollo](docs/roadmap.md)
+- [Política de seguridad](SECURITY.md)
+- [Guía de contribución](CONTRIBUTING.md)
 
 ---
 
