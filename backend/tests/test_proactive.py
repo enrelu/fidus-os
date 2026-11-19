@@ -445,3 +445,188 @@ def test_free_text_ingest_normalizes_llm_payload_synonyms_and_executes_lead(
     assert lead_db.email == "paco@aenor.example"
     assert lead_db.notes == "Contacto entrante de prueba"
 
+
+def test_copilot_chat_multi_step_tools_hitl_and_tenant_isolation(
+    client: TestClient,
+    tenant_a: dict,
+    tenant_b: dict,
+) -> None:
+    # 1. Sin BYOK configurado -> 400 claro en español
+    no_byok = client.post(
+        "/api/v1/ai/proactive/chat",
+        headers=tenant_a["headers"],
+        json={"messages": [{"role": "user", "content": "¿Qué tareas son las más urgentes?"}]},
+    )
+    assert no_byok.status_code == 400
+    assert "BYOK" in no_byok.json()["detail"]
+
+    _register_byok_openai(client, tenant_a["headers"], model_name="gpt-4o-mini")
+
+    # 2. Datos de Tenant A y Tenant B (aislamiento estricto)
+    org_a = client.post(
+        "/api/v1/crm/organizations",
+        headers=tenant_a["headers"],
+        json={"name": "Levante Sistemas", "cif": "B96001122"},
+    ).json()
+    opp_a = client.post(
+        "/api/v1/crm/opportunities",
+        headers=tenant_a["headers"],
+        json={
+            "organization_id": org_a["id"],
+            "title": "Migración Levante",
+            "amount_eur": 22000.0,
+            "stage": "proposal",
+            "probability": 70,
+        },
+    ).json()
+    client.post(
+        "/api/v1/crm/tasks",
+        headers=tenant_a["headers"],
+        json={
+            "organization_id": org_a["id"],
+            "title": "Tarea media normal",
+            "priority": "medium",
+        },
+    )
+    client.post(
+        "/api/v1/crm/tasks",
+        headers=tenant_a["headers"],
+        json={
+            "organization_id": org_a["id"],
+            "opportunity_id": opp_a["id"],
+            "title": "Firmar anexo RGPD urgente",
+            "priority": "urgent",
+        },
+    )
+
+    org_b = client.post(
+        "/api/v1/crm/organizations",
+        headers=tenant_b["headers"],
+        json={"name": "Empresa Secreta B", "cif": "A00999999"},
+    ).json()
+    client.post(
+        "/api/v1/crm/tasks",
+        headers=tenant_b["headers"],
+        json={
+            "organization_id": org_b["id"],
+            "title": "SECRETO TENANT B",
+            "priority": "urgent",
+        },
+    )
+
+    # 3. Flujo multi-paso:
+    # Paso 1 -> LLM pide resumen_crm + intenta cuenta_360 cruzada sobre org_b (debe fallar por aislamiento)
+    # Paso 2 -> LLM recibe resultados reales de Tenant A (sin Tenant B) y pide proponer_accion
+    # Paso 3 -> LLM responde con answer final
+    call_count = 0
+    observed_tool_results: list[dict] = []
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal call_count
+        call_count += 1
+        req_body = json.loads(request.content.decode("utf-8"))
+        messages = req_body["messages"]
+
+        if call_count == 1:
+            content = json.dumps(
+                {
+                    "tool_calls": [
+                        {"name": "resumen_crm", "arguments": {}},
+                        {"name": "cuenta_360", "arguments": {"organization_id": org_b["id"]}},
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        elif call_count == 2:
+            last_obs = json.loads(messages[-1]["content"])
+            observed_tool_results.extend(last_obs["tool_results"])
+            content = json.dumps(
+                {
+                    "tool_calls": [
+                        {
+                            "name": "proponer_accion",
+                            "arguments": {
+                                "action_type": "create_task",
+                                "target_entity_type": "opportunity",
+                                "target_entity_id": opp_a["id"],
+                                "payload": {
+                                    "titulo": "Llamar hoy por anexo RGPD urgente",
+                                    "priority": "urgent",
+                                    "opportunity_id": opp_a["id"],
+                                },
+                            },
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+        else:
+            content = json.dumps(
+                {
+                    "answer": "Tu tarea más urgente es 'Firmar anexo RGPD urgente' (Migración Levante, 22.000 EUR). He propuesto una acción de seguimiento en HITL.",
+                    "proposed_actions": [],
+                },
+                ensure_ascii=False,
+            )
+
+        return httpx.Response(
+            200,
+            json={
+                "model": "gpt-4o-mini",
+                "choices": [{"message": {"content": content}}],
+            },
+        )
+
+    mock_gateway = AIGateway(transport=httpx.MockTransport(mock_handler))
+    client.app.dependency_overrides[get_ai_gateway] = lambda: mock_gateway  # type: ignore[attr-defined]
+    try:
+        chat_resp = client.post(
+            "/api/v1/ai/proactive/chat",
+            headers=tenant_a["headers"],
+            json={
+                "organization_id": org_a["id"],
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "¿Qué tareas son las más urgentes y créame seguimiento para Levante?",
+                    }
+                ],
+            },
+        )
+        assert chat_resp.status_code == 200, chat_resp.text
+        body = chat_resp.json()
+    finally:
+        client.app.dependency_overrides.pop(get_ai_gateway, None)  # type: ignore[attr-defined]
+
+    assert call_count == 3
+    assert "Firmar anexo RGPD urgente" in body["answer"]
+    assert body["tools_used"] == ["resumen_crm", "cuenta_360", "proponer_accion"]
+    assert body["model_used"] == "gpt-4o-mini"
+
+    # Verificar que resumen_crm devolvió las tareas ordenadas por prioridad (urgent antes que medium)
+    # y jamás filtró datos de Tenant B; y cuenta_360 sobre org_b devolvió error de tenant
+    resumen_res = observed_tool_results[0]["result"]
+    assert resumen_res["open_tasks"][0]["title"] == "Firmar anexo RGPD urgente"
+    assert resumen_res["open_tasks"][0]["priority"] == "urgent"
+    assert resumen_res["counts"]["open_pipeline_eur"] == 22000.0
+    serialized_resumen = json.dumps(resumen_res, ensure_ascii=False)
+    assert "SECRETO TENANT B" not in serialized_resumen
+    assert "Empresa Secreta B" not in serialized_resumen
+
+    cross_res = observed_tool_results[1]["result"]
+    assert "error" in cross_res
+
+    # Verificar AgentAction HITL creada (con normalización de titulo -> title e inyección de organization_id)
+    assert len(body["created_actions"]) == 1
+    created_act = body["created_actions"][0]
+    assert created_act["status"] == "pending_approval"
+    assert created_act["action_type"] == "create_task"
+    assert created_act["payload"]["title"] == "Llamar hoy por anexo RGPD urgente"
+    assert created_act["payload"]["organization_id"] == org_a["id"]
+    assert created_act["payload"]["opportunity_id"] == opp_a["id"]
+
+    # Verificar trazabilidad en ActivityLog
+    activities = client.get("/api/v1/crm/activities?actor_type=agent", headers=tenant_a["headers"]).json()
+    assert any(act["action"] == "proactive:copilot_chat" and act["model_used"] == "gpt-4o-mini" for act in activities)
+
+

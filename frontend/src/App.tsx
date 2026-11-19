@@ -64,17 +64,23 @@ const AppRoutes: React.FC = () => {
     }
 
     let active = true;
-    aiApi
-      .listAgentActions("pending_approval")
-      .then((items) => {
-        if (active) setPendingCount(items.length);
-      })
-      .catch(() => {
-        // El badge se sincroniza igualmente al abrir Supervisión HITL
-      });
+    const refreshPending = () => {
+      aiApi
+        .listAgentActions("pending_approval")
+        .then((items) => {
+          if (active) setPendingCount(items.length);
+        })
+        .catch(() => {
+          // El badge se sincroniza igualmente al abrir Supervisión HITL
+        });
+    };
+
+    refreshPending();
+    window.addEventListener("fidus:crm-updated", refreshPending);
 
     return () => {
       active = false;
+      window.removeEventListener("fidus:crm-updated", refreshPending);
     };
   }, [user]);
 

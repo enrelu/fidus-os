@@ -9,6 +9,7 @@ import {
   ChevronUp,
   Clock,
   Cpu,
+  MessageSquareText,
   Play,
   Radar,
   RefreshCw,
@@ -115,6 +116,12 @@ export const SupervisionPage: React.FC<SupervisionPageProps> = ({ onPendingCount
     void loadActions();
   }, [loadActions]);
 
+  useEffect(() => {
+    const onCrmUpdated = () => void loadActions();
+    window.addEventListener("fidus:crm-updated", onCrmUpdated);
+    return () => window.removeEventListener("fidus:crm-updated", onCrmUpdated);
+  }, [loadActions]);
+
   const handleAction = async (
     actionId: number,
     mode: "approve_execute" | "approve" | "execute" | "reject"
@@ -215,6 +222,15 @@ export const SupervisionPage: React.FC<SupervisionPageProps> = ({ onPendingCount
         </div>
 
         <div className="flex flex-wrap items-center gap-2 self-start">
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent("fidus:open-copilot"))}
+            className="inline-flex items-center gap-2 rounded-lg bg-slate-900 px-3.5 py-2 text-sm font-semibold text-white shadow-xs transition hover:bg-slate-800"
+          >
+            <MessageSquareText className="h-4 w-4 text-indigo-300" />
+            Copiloto CRM
+          </button>
+
           <button
             type="button"
             disabled={radarRunning || (proactiveStatus !== null && !proactiveStatus.has_default_byok)}

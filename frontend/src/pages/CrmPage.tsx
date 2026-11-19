@@ -123,6 +123,12 @@ export const CrmPage: React.FC = () => {
     void loadData();
   }, [loadData]);
 
+  useEffect(() => {
+    const onCrmUpdated = () => void loadData();
+    window.addEventListener("fidus:crm-updated", onCrmUpdated);
+    return () => window.removeEventListener("fidus:crm-updated", onCrmUpdated);
+  }, [loadData]);
+
   const orgNameById = (id: number | null) =>
     organizations.find((o) => o.id === id)?.name || (id ? `#${id}` : "—");
 

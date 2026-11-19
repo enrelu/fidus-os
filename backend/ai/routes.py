@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import Session, select
 
+from ai.copilot import run_copilot_chat_for_tenant
 from ai.dispatcher import get_worker_heartbeat
 from ai.gateway import AIGateway, AIGatewayError, PROVIDERS_REQUIRING_KEY, get_default_provider_config
 from ai.proactive import (
@@ -1004,4 +1005,66 @@ async def trigger_proactive_ingest(
         ) from exc
 
     return ProactiveIngestResponse(**result)
+
+
+class CopilotChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = PydanticField(min_length=1, max_length=20000)
+
+
+class CopilotChatRequest(BaseModel):
+    messages: list[CopilotChatMessage] = PydanticField(min_length=1, max_length=40)
+    organization_id: Optional[int] = None
+
+
+class CopilotChatResponse(BaseModel):
+    answer: str
+    tools_used: list[str]
+    created_actions: list[AgentActionPublic]
+    model_used: str
+
+
+@router.post("/proactive/chat", response_model=CopilotChatResponse)
+async def proactive_copilot_chat(
+    payload: CopilotChatRequest,
+    current_user: User = Depends(require_tenant_user),
+    session: Session = Depends(get_session),
+    gateway: AIGateway = Depends(get_ai_gateway),
+) -> CopilotChatResponse:
+    if payload.organization_id is not None:
+        _validate_tenant_fk(
+            session,
+            Organization,
+            payload.organization_id,
+            current_user.tenant_id,
+            "organization_id",
+        )
+
+    last_msg = payload.messages[-1]
+    if last_msg.role != "user" or not last_msg.content.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El último mensaje de la conversación debe ser del usuario y no puede estar vacío.",
+        )
+
+    try:
+        result = await run_copilot_chat_for_tenant(
+            session,
+            current_user.tenant_id,
+            current_user,
+            [{"role": m.role, "content": m.content} for m in payload.messages],
+            organization_id=payload.organization_id,
+            gateway=gateway,
+        )
+    except NoBYOKConfiguredError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except AIGatewayError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+    return CopilotChatResponse(**result)
 

@@ -13,6 +13,8 @@ import type {
   Client,
   ClientPayload,
   ConnectionTestResponse,
+  CopilotChatPayload,
+  CopilotChatResponse,
   Lead,
   LeadPayload,
   LoginPayload,
@@ -184,6 +186,11 @@ export const aiApi = {
     }),
   ingestProactiveText: (payload: ProactiveIngestPayload) =>
     request<ProactiveIngestResponse>("/api/v1/ai/proactive/ingest", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
+  copilotChat: (payload: CopilotChatPayload) =>
+    request<CopilotChatResponse>("/api/v1/ai/proactive/chat", {
       method: "POST",
       body: JSON.stringify(payload),
     }),

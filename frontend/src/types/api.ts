@@ -299,3 +299,21 @@ export interface ProactiveIngestResponse {
   summary: string;
   created_actions: AgentAction[];
 }
+
+export interface CopilotMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface CopilotChatPayload {
+  messages: CopilotMessage[];
+  organization_id?: number | null;
+}
+
+export interface CopilotChatResponse {
+  answer: string;
+  tools_used: string[];
+  created_actions: AgentAction[];
+  model_used: string;
+}
+

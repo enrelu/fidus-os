@@ -4,7 +4,7 @@ import json
 from typing import Any, Literal, Optional
 
 from mcp.server.fastmcp import FastMCP
-from sqlalchemy import func, or_
+from sqlalchemy import func
 from sqlmodel import col, select
 
 from core.models import (
@@ -12,12 +12,16 @@ from core.models import (
     ActorType,
     AgentAction,
     AgentActionStatus,
-    Client,
     Lead,
-    Opportunity,
     Organization,
-    Task,
     utc_now,
+)
+from crm.services import (
+    ENTITY_MODELS,
+    get_account_360_for_tenant,
+    list_pending_for_tenant,
+    log_interaction_for_tenant,
+    search_crm_for_tenant,
 )
 from mcp_server.context import open_mcp_db_session, require_mcp_scope
 
@@ -33,30 +37,6 @@ mcp = FastMCP(
     stateless_http=True,
 )
 
-_ENTITY_MODELS: dict[str, Any] = {
-    "organization": Organization,
-    "client": Client,
-    "lead": Lead,
-    "opportunity": Opportunity,
-    "task": Task,
-}
-
-
-def _normalize_channel(channel: str) -> str:
-    cleaned = channel.strip().lower()
-    mapping = {
-        "llamada": "llamada",
-        "reunion": "reunion",
-        "reunión": "reunion",
-        "email": "email",
-        "whatsapp": "whatsapp",
-    }
-    if cleaned not in mapping:
-        raise ValueError(
-            "Canal de interacción no válido. Usa uno de: 'llamada', 'reunion', 'email', 'whatsapp'."
-        )
-    return mapping[cleaned]
-
 
 @mcp.tool()
 def buscar_crm(query: str, limit: int = 10) -> dict[str, Any]:
@@ -65,133 +45,8 @@ def buscar_crm(query: str, limit: int = 10) -> dict[str, Any]:
     Requiere scope: `crm:read`.
     """
     ctx = require_mcp_scope("crm:read")
-    term = query.strip().lower()
-    if not term:
-        raise ValueError("El parámetro 'query' no puede estar vacío.")
-    safe_limit = max(1, min(limit, 50))
-
     with open_mcp_db_session(app=ctx.app) as session:
-        orgs = session.exec(
-            select(Organization)
-            .where(
-                Organization.tenant_id == ctx.tenant_id,
-                or_(
-                    func.lower(col(Organization.name)).contains(term),
-                    func.lower(func.coalesce(col(Organization.cif), "")).contains(term),
-                    func.lower(func.coalesce(col(Organization.razon_social), "")).contains(term),
-                    func.lower(func.coalesce(col(Organization.email), "")).contains(term),
-                ),
-            )
-            .limit(safe_limit)
-        ).all()
-
-        clients = session.exec(
-            select(Client)
-            .where(
-                Client.tenant_id == ctx.tenant_id,
-                or_(
-                    func.lower(col(Client.full_name)).contains(term),
-                    func.lower(func.coalesce(col(Client.email), "")).contains(term),
-                    func.lower(func.coalesce(col(Client.job_title), "")).contains(term),
-                ),
-            )
-            .limit(safe_limit)
-        ).all()
-
-        leads = session.exec(
-            select(Lead)
-            .where(
-                Lead.tenant_id == ctx.tenant_id,
-                or_(
-                    func.lower(col(Lead.full_name)).contains(term),
-                    func.lower(func.coalesce(col(Lead.email), "")).contains(term),
-                    func.lower(func.coalesce(col(Lead.company_name), "")).contains(term),
-                ),
-            )
-            .limit(safe_limit)
-        ).all()
-
-        opportunities = session.exec(
-            select(Opportunity)
-            .where(
-                Opportunity.tenant_id == ctx.tenant_id,
-                or_(
-                    func.lower(col(Opportunity.title)).contains(term),
-                    func.lower(col(Opportunity.stage)).contains(term),
-                ),
-            )
-            .limit(safe_limit)
-        ).all()
-
-        tasks = session.exec(
-            select(Task)
-            .where(
-                Task.tenant_id == ctx.tenant_id,
-                or_(
-                    func.lower(col(Task.title)).contains(term),
-                    func.lower(func.coalesce(col(Task.description), "")).contains(term),
-                ),
-            )
-            .limit(safe_limit)
-        ).all()
-
-        return {
-            "query": query,
-            "organizations": [
-                {
-                    "id": o.id,
-                    "name": o.name,
-                    "cif": o.cif,
-                    "razon_social": o.razon_social,
-                    "sector": o.sector,
-                }
-                for o in orgs
-            ],
-            "clients": [
-                {
-                    "id": c.id,
-                    "organization_id": c.organization_id,
-                    "full_name": c.full_name,
-                    "email": c.email,
-                    "job_title": c.job_title,
-                    "rgpd_consent": c.rgpd_consent,
-                }
-                for c in clients
-            ],
-            "leads": [
-                {
-                    "id": l.id,
-                    "full_name": l.full_name,
-                    "email": l.email,
-                    "company_name": l.company_name,
-                    "status": l.status,
-                }
-                for l in leads
-            ],
-            "opportunities": [
-                {
-                    "id": op.id,
-                    "organization_id": op.organization_id,
-                    "title": op.title,
-                    "amount_eur": op.amount_eur,
-                    "currency": op.currency,
-                    "stage": op.stage,
-                    "probability": op.probability,
-                }
-                for op in opportunities
-            ],
-            "tasks": [
-                {
-                    "id": t.id,
-                    "title": t.title,
-                    "status": t.status,
-                    "priority": t.priority,
-                    "organization_id": t.organization_id,
-                    "opportunity_id": t.opportunity_id,
-                }
-                for t in tasks
-            ],
-        }
+        return search_crm_for_tenant(session, ctx.tenant_id, query, limit=limit)
 
 
 @mcp.tool()
@@ -202,138 +57,8 @@ def cuenta_360(organization_id: int) -> dict[str, Any]:
     Requiere scope: `crm:read`.
     """
     ctx = require_mcp_scope("crm:read")
-
     with open_mcp_db_session(app=ctx.app) as session:
-        org = session.exec(
-            select(Organization).where(
-                Organization.id == organization_id,
-                Organization.tenant_id == ctx.tenant_id,
-            )
-        ).first()
-        if org is None:
-            raise LookupError(f"Organización {organization_id} no encontrada en el tenant.")
-
-        clients = session.exec(
-            select(Client)
-            .where(
-                Client.tenant_id == ctx.tenant_id,
-                Client.organization_id == organization_id,
-            )
-            .order_by(col(Client.id).asc())
-        ).all()
-
-        opportunities = session.exec(
-            select(Opportunity)
-            .where(
-                Opportunity.tenant_id == ctx.tenant_id,
-                Opportunity.organization_id == organization_id,
-            )
-            .order_by(col(Opportunity.id).desc())
-        ).all()
-
-        pending_tasks = session.exec(
-            select(Task)
-            .where(
-                Task.tenant_id == ctx.tenant_id,
-                Task.organization_id == organization_id,
-                col(Task.status).notin_(["completed", "cancelled"]),
-            )
-            .order_by(col(Task.id).desc())
-        ).all()
-
-        client_ids = [c.id for c in clients if c.id is not None]
-        opp_ids = [op.id for op in opportunities if op.id is not None]
-        task_ids = [t.id for t in pending_tasks if t.id is not None]
-
-        activity_filters = [
-            (col(ActivityLog.entity_type) == "organization") & (col(ActivityLog.entity_id) == organization_id)
-        ]
-        if client_ids:
-            activity_filters.append(
-                (col(ActivityLog.entity_type) == "client") & col(ActivityLog.entity_id).in_(client_ids)
-            )
-        if opp_ids:
-            activity_filters.append(
-                (col(ActivityLog.entity_type) == "opportunity") & col(ActivityLog.entity_id).in_(opp_ids)
-            )
-        if task_ids:
-            activity_filters.append(
-                (col(ActivityLog.entity_type) == "task") & col(ActivityLog.entity_id).in_(task_ids)
-            )
-
-        activities = session.exec(
-            select(ActivityLog)
-            .where(ActivityLog.tenant_id == ctx.tenant_id, or_(*activity_filters))
-            .order_by(col(ActivityLog.id).desc())
-            .limit(20)
-        ).all()
-
-        pipeline_total_eur = round(
-            sum(op.amount_eur for op in opportunities if op.stage != "closed_lost"),
-            2,
-        )
-
-        return {
-            "organization": {
-                "id": org.id,
-                "name": org.name,
-                "cif": org.cif,
-                "razon_social": org.razon_social,
-                "direccion_fiscal": org.direccion_fiscal,
-                "sector": org.sector,
-                "website": org.website,
-                "phone": org.phone,
-                "email": org.email,
-                "notes": org.notes,
-            },
-            "clients": [
-                {
-                    "id": c.id,
-                    "full_name": c.full_name,
-                    "email": c.email,
-                    "phone": c.phone,
-                    "job_title": c.job_title,
-                    "rgpd_consent": c.rgpd_consent,
-                }
-                for c in clients
-            ],
-            "opportunities": [
-                {
-                    "id": op.id,
-                    "title": op.title,
-                    "amount_eur": op.amount_eur,
-                    "currency": op.currency,
-                    "stage": op.stage,
-                    "probability": op.probability,
-                }
-                for op in opportunities
-            ],
-            "pipeline_total_eur": pipeline_total_eur,
-            "pending_tasks": [
-                {
-                    "id": t.id,
-                    "title": t.title,
-                    "status": t.status,
-                    "priority": t.priority,
-                    "due_date": t.due_date.isoformat() if t.due_date else None,
-                }
-                for t in pending_tasks
-            ],
-            "recent_activities": [
-                {
-                    "id": act.id,
-                    "actor_type": act.actor_type,
-                    "actor_name": act.actor_name,
-                    "model_used": act.model_used,
-                    "action": act.action,
-                    "entity_type": act.entity_type,
-                    "entity_id": act.entity_id,
-                    "details_json": act.details_json,
-                    "created_at": act.created_at.isoformat(),
-                }
-                for act in activities
-            ],
-        }
+        return get_account_360_for_tenant(session, ctx.tenant_id, organization_id)
 
 
 @mcp.tool()
@@ -343,56 +68,8 @@ def listar_pendientes(limit: int = 20) -> dict[str, Any]:
     Requiere scope: `crm:read`.
     """
     ctx = require_mcp_scope("crm:read")
-    safe_limit = max(1, min(limit, 100))
-
     with open_mcp_db_session(app=ctx.app) as session:
-        open_tasks = session.exec(
-            select(Task)
-            .where(
-                Task.tenant_id == ctx.tenant_id,
-                col(Task.status).notin_(["completed", "cancelled"]),
-            )
-            .order_by(col(Task.id).desc())
-            .limit(safe_limit)
-        ).all()
-
-        pending_actions = session.exec(
-            select(AgentAction)
-            .where(
-                AgentAction.tenant_id == ctx.tenant_id,
-                AgentAction.status == AgentActionStatus.PENDING_APPROVAL.value,
-            )
-            .order_by(col(AgentAction.id).desc())
-            .limit(safe_limit)
-        ).all()
-
-        return {
-            "open_tasks": [
-                {
-                    "id": t.id,
-                    "title": t.title,
-                    "status": t.status,
-                    "priority": t.priority,
-                    "organization_id": t.organization_id,
-                    "opportunity_id": t.opportunity_id,
-                    "due_date": t.due_date.isoformat() if t.due_date else None,
-                }
-                for t in open_tasks
-            ],
-            "pending_agent_actions": [
-                {
-                    "id": a.id,
-                    "agent_name": a.agent_name,
-                    "model_used": a.model_used,
-                    "action_type": a.action_type,
-                    "target_entity_type": a.target_entity_type,
-                    "target_entity_id": a.target_entity_id,
-                    "status": a.status,
-                    "created_at": a.created_at.isoformat(),
-                }
-                for a in pending_actions
-            ],
-        }
+        return list_pending_for_tenant(session, ctx.tenant_id, limit=limit)
 
 
 @mcp.tool()
@@ -548,54 +225,21 @@ def registrar_interaccion(
     Requiere scope: `crm:write`.
     """
     ctx = require_mcp_scope("crm:write")
-    normalized_channel = _normalize_channel(channel)
-    cleaned_summary = summary.strip()
-    if not cleaned_summary:
-        raise ValueError("El campo 'summary' no puede estar vacío.")
-
-    model_cls = _ENTITY_MODELS.get(entity_type)
-    if model_cls is None:
-        raise ValueError(f"Tipo de entidad '{entity_type}' no soportado.")
-
     with open_mcp_db_session(app=ctx.app) as session:
-        entity = session.exec(
-            select(model_cls).where(model_cls.id == entity_id, model_cls.tenant_id == ctx.tenant_id)
-        ).first()
-        if entity is None:
-            raise LookupError(f"Entidad {entity_type}:{entity_id} no encontrada en el tenant.")
-
-        details = {
-            "channel": normalized_channel,
-            "summary": cleaned_summary,
-            "outcome": outcome,
-        }
-        log = ActivityLog(
-            tenant_id=ctx.tenant_id,
+        return log_interaction_for_tenant(
+            session,
+            ctx.tenant_id,
             actor_type=ActorType.AGENT.value,
             actor_name=ctx.agent_name,
-            user_id=None,
-            model_used=model_used,
-            action=f"interaction:{normalized_channel}",
+            channel=channel,
             entity_type=entity_type,
             entity_id=entity_id,
-            details_json=json.dumps(details, ensure_ascii=False),
+            summary=summary,
+            outcome=outcome,
+            user_id=None,
+            model_used=model_used,
+            commit=True,
         )
-        session.add(log)
-        session.commit()
-        session.refresh(log)
-
-        return {
-            "id": log.id,
-            "tenant_id": log.tenant_id,
-            "actor_type": log.actor_type,
-            "actor_name": log.actor_name,
-            "model_used": log.model_used,
-            "action": log.action,
-            "entity_type": log.entity_type,
-            "entity_id": log.entity_id,
-            "details": details,
-            "created_at": log.created_at.isoformat(),
-        }
 
 
 _SUPPORTED_PROPOSED_ACTIONS = ("create_task", "create_lead", "update_opportunity")
@@ -626,8 +270,8 @@ def proponer_accion(
         )
 
     with open_mcp_db_session(app=ctx.app) as session:
-        if target_entity_id is not None and cleaned_entity_type in _ENTITY_MODELS:
-            model_cls = _ENTITY_MODELS[cleaned_entity_type]
+        if target_entity_id is not None and cleaned_entity_type in ENTITY_MODELS:
+            model_cls = ENTITY_MODELS[cleaned_entity_type]
             target = session.exec(
                 select(model_cls.id).where(
                     model_cls.id == target_entity_id,
