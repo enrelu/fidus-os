@@ -13,7 +13,12 @@ import type {
   Client,
   ClientPayload,
   ConnectionTestResponse,
+  CopilotChatPayload,
+  CopilotChatResponse,
+  DashboardAnalyticsResponse,
   Lead,
+  LeadConvertRequest,
+  LeadConvertResponse,
   LeadPayload,
   LoginPayload,
   Opportunity,
@@ -22,11 +27,13 @@ import type {
   OrganizationPayload,
   ProactiveIngestPayload,
   ProactiveIngestResponse,
+  ProactiveQualifyResponse,
   ProactiveRadarResponse,
   ProactiveStatus,
   RegisterPayload,
   Task,
   TaskPayload,
+  TodayPrioritiesResponse,
   TokenResponse,
   UserPublic,
 } from "../types/api";
@@ -187,9 +194,28 @@ export const aiApi = {
       method: "POST",
       body: JSON.stringify(payload),
     }),
+  qualifyLead: (leadId: number) =>
+    request<ProactiveQualifyResponse>(`/api/v1/ai/proactive/qualify/${leadId}`, {
+      method: "POST",
+    }),
+  copilotChat: (payload: CopilotChatPayload) =>
+    request<CopilotChatResponse>("/api/v1/ai/proactive/chat", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
 };
 
 export const crmApi = {
+  getTodayPriorities: (staleDays = 7) =>
+    request<TodayPrioritiesResponse>(`/api/v1/crm/priorities/today?stale_days=${staleDays}`),
+  getDashboardAnalytics: (params?: { year?: number; quarter?: number | null }) => {
+    const search = new URLSearchParams();
+    if (params?.year) search.set("year", String(params.year));
+    if (params?.quarter) search.set("quarter", String(params.quarter));
+    const qs = search.toString();
+    return request<DashboardAnalyticsResponse>(`/api/v1/crm/analytics/dashboard${qs ? `?${qs}` : ""}`);
+  },
+
   listActivities: (params?: { actor_type?: ActorType; entity_type?: string }) => {
     const search = new URLSearchParams();
     if (params?.actor_type) search.set("actor_type", params.actor_type);
@@ -235,6 +261,11 @@ export const crmApi = {
   updateLead: (id: number, payload: Partial<LeadPayload>) =>
     request<Lead>(`/api/v1/crm/leads/${id}`, {
       method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  convertLead: (id: number, payload: LeadConvertRequest) =>
+    request<LeadConvertResponse>(`/api/v1/crm/leads/${id}/convert`, {
+      method: "POST",
       body: JSON.stringify(payload),
     }),
   deleteLead: (id: number) =>

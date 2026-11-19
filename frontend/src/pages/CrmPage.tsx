@@ -16,7 +16,11 @@ import { aiApi, ApiError, crmApi } from "../api/client";
 import type { Client, Lead, Opportunity, Organization, Task } from "../types/api";
 import { formatDateTimeEs, formatEur } from "../utils/format";
 
-type CrmTab = "organizations" | "clients" | "leads" | "opportunities" | "tasks";
+export type CrmTab = "organizations" | "clients" | "leads" | "opportunities" | "tasks";
+
+export interface CrmPageProps {
+  fixedTab?: CrmTab;
+}
 
 const TABS: { key: CrmTab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { key: "organizations", label: "Organizaciones", icon: Building2 },
@@ -26,8 +30,44 @@ const TABS: { key: CrmTab; label: string; icon: React.ComponentType<{ className?
   { key: "tasks", label: "Tareas", icon: CheckSquare },
 ];
 
-export const CrmPage: React.FC = () => {
-  const [tab, setTab] = useState<CrmTab>("organizations");
+const TAB_META: Record<
+  CrmTab,
+  { title: string; subtitle: string; newLabel: string; entityType: string }
+> = {
+  organizations: {
+    title: "Organizaciones",
+    subtitle: "Empresas españolas, CIF/NIF, razón social y dirección fiscal.",
+    newLabel: "Nueva organización",
+    entityType: "organization",
+  },
+  clients: {
+    title: "Clientes y Contactos",
+    subtitle: "Contactos vinculados a organizaciones con trazabilidad RGPD / LOPDGDD.",
+    newLabel: "Nuevo contacto",
+    entityType: "client",
+  },
+  leads: {
+    title: "Leads",
+    subtitle: "Prospectos entrantes y cualificación comercial.",
+    newLabel: "Nuevo lead",
+    entityType: "lead",
+  },
+  opportunities: {
+    title: "Oportunidades",
+    subtitle: "Pipeline comercial en EUR, etapa y probabilidad de cierre.",
+    newLabel: "Nueva oportunidad",
+    entityType: "opportunity",
+  },
+  tasks: {
+    title: "Tareas",
+    subtitle: "Seguimientos comerciales, prioridades y vencimientos.",
+    newLabel: "Nueva tarea",
+    entityType: "task",
+  },
+};
+
+export const CrmPage: React.FC<CrmPageProps> = ({ fixedTab }) => {
+  const [tab, setTab] = useState<CrmTab>(fixedTab || "organizations");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -120,7 +160,21 @@ export const CrmPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    if (fixedTab) {
+      setTab(fixedTab);
+      setModalOpen(false);
+      setNotice(null);
+    }
+  }, [fixedTab]);
+
+  useEffect(() => {
     void loadData();
+  }, [loadData]);
+
+  useEffect(() => {
+    const onCrmUpdated = () => void loadData();
+    window.addEventListener("fidus:crm-updated", onCrmUpdated);
+    return () => window.removeEventListener("fidus:crm-updated", onCrmUpdated);
   }, [loadData]);
 
   const orgNameById = (id: number | null) =>
@@ -341,46 +395,78 @@ export const CrmPage: React.FC = () => {
     }
   };
 
+  const activeMeta = TAB_META[tab];
+
+  const openContextualCopilot = () => {
+    window.dispatchEvent(
+      new CustomEvent("fidus:open-copilot", {
+        detail: {
+          context: {
+            view: tab,
+            entity_type: activeMeta.entityType,
+            entity_label: activeMeta.title,
+          },
+        },
+      })
+    );
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">CRM Operativo</h1>
-          <p className="mt-1 text-sm text-slate-600">
-            Gestión base multi-tenant con datos fiscales españoles, consentimiento RGPD y oportunidades en EUR.
+          <h1 className="text-xl font-bold tracking-tight text-[#121212]">
+            {fixedTab ? activeMeta.title : "CRM Operativo"}
+          </h1>
+          <p className="mt-1 text-sm text-neutral-600">
+            {fixedTab
+              ? activeMeta.subtitle
+              : "Gestión base multi-tenant con datos fiscales españoles, consentimiento RGPD y oportunidades en EUR."}
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={openCreateModal}
-          className="inline-flex items-center gap-1.5 self-start rounded-lg bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white shadow-xs transition hover:bg-indigo-500"
-        >
-          <Plus className="h-4 w-4" />
-          Nuevo registro
-        </button>
+        <div className="flex flex-wrap items-center gap-2 self-start">
+          <button
+            type="button"
+            onClick={openContextualCopilot}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-[#e7e7e9] bg-white px-3 py-2 text-xs font-medium text-[#121212] transition hover:bg-[#f7f7f8]"
+          >
+            <Sparkles className="h-3.5 w-3.5 text-[#0d5fea]" />
+            Preguntar al Copiloto
+          </button>
+          <button
+            type="button"
+            onClick={openCreateModal}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-[#0d5fea] px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-[#0b52cc]"
+          >
+            <Plus className="h-4 w-4" />
+            {fixedTab ? activeMeta.newLabel : "Nuevo registro"}
+          </button>
+        </div>
       </div>
 
-      <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-3">
-        {TABS.map((t) => {
-          const Icon = t.icon;
-          return (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => setTab(t.key)}
-              className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-sm font-medium transition ${
-                tab === t.key
-                  ? "bg-slate-900 text-white"
-                  : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-100"
-              }`}
-            >
-              <Icon className="h-4 w-4" />
-              {t.label}
-            </button>
-          );
-        })}
-      </div>
+      {!fixedTab && (
+        <div className="flex flex-wrap gap-2 border-b border-[#e7e7e9] pb-3">
+          {TABS.map((t) => {
+            const Icon = t.icon;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                onClick={() => setTab(t.key)}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-sm font-medium transition ${
+                  tab === t.key
+                    ? "bg-[#121212] text-white"
+                    : "border border-[#e7e7e9] bg-white text-neutral-600 hover:bg-[#f7f7f8]"
+                }`}
+              >
+                <Icon className="h-4 w-4" />
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {error && (
         <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
@@ -389,18 +475,18 @@ export const CrmPage: React.FC = () => {
       )}
 
       {notice && (
-        <div className="flex items-start gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-900">
-          <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-indigo-600" />
+        <div className="flex items-start gap-2 rounded-xl border border-[#0d5fea]/20 bg-[#0d5fea]/5 px-4 py-3 text-sm text-[#121212]">
+          <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-[#0d5fea]" />
           <span>{notice}</span>
         </div>
       )}
 
       {loading ? (
-        <div className="rounded-2xl border border-slate-200 bg-white p-10 text-center text-sm text-slate-500">
+        <div className="rounded-xl border border-[#e7e7e9] bg-white p-10 text-center text-sm text-neutral-500">
           Cargando registros del CRM...
         </div>
       ) : (
-        <div className="overflow-x-auto rounded-2xl border border-slate-200 bg-white shadow-xs">
+        <div className="overflow-x-auto rounded-xl border border-[#e7e7e9] bg-white">
           {tab === "organizations" && (
             <table className="w-full text-left text-xs">
               <thead className="border-b border-slate-200 bg-slate-50 text-slate-600">

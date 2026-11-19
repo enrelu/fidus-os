@@ -219,6 +219,7 @@ export interface LeadPayload {
   status: string;
   score?: number | null;
   notes?: string;
+  skip_ai_qualification?: boolean;
 }
 
 export interface Opportunity {
@@ -246,6 +247,7 @@ export interface OpportunityPayload {
   amount_eur: number;
   stage: string;
   probability: number;
+  expected_close_date?: string | null;
   notes?: string;
 }
 
@@ -273,6 +275,7 @@ export interface TaskPayload {
   description?: string;
   status: string;
   priority: string;
+  due_date?: string | null;
 }
 
 export interface ProactiveStatus {
@@ -299,3 +302,204 @@ export interface ProactiveIngestResponse {
   summary: string;
   created_actions: AgentAction[];
 }
+
+export interface ProactiveQualifyResponse {
+  status: string;
+  lead_id: number;
+  score: number | null;
+  model_used: string | null;
+  created_action: AgentAction | null;
+}
+
+export interface CopilotContext {
+  view?: string;
+  entity_type?: "organization" | "client" | "lead" | "opportunity" | "task";
+  entity_id?: number;
+  entity_label?: string;
+}
+
+export interface CopilotMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface CopilotChatPayload {
+  messages: CopilotMessage[];
+  organization_id?: number | null;
+  context?: CopilotContext | null;
+}
+
+export interface CopilotChatResponse {
+  answer: string;
+  tools_used: string[];
+  created_actions: AgentAction[];
+  model_used: string;
+}
+
+export interface TodayPriorityItem {
+  id: string;
+  kind: "task" | "lead_followup" | "opportunity_stalled" | "client_followup";
+  entity_type: "task" | "lead" | "opportunity" | "client";
+  entity_id: number;
+  title: string;
+  reason: string;
+  priority: "urgent" | "high" | "medium" | "low";
+  impact_score: number;
+  status: string;
+  due_date: string | null;
+  is_overdue: boolean;
+  amount_eur: number | null;
+  organization_id: number | null;
+  organization_name: string | null;
+  opportunity_id: number | null;
+  opportunity_title: string | null;
+  score: number | null;
+}
+
+export interface TodayStaleLead {
+  id: number;
+  full_name: string;
+  company_name: string | null;
+  status: string;
+  score: number | null;
+  days_without_activity: number;
+  last_activity_at: string;
+}
+
+export interface TodayStaleOpportunity {
+  id: number;
+  title: string;
+  organization_id: number | null;
+  organization_name: string | null;
+  amount_eur: number;
+  stage: string;
+  probability: number;
+  days_without_activity: number;
+  has_open_task: boolean;
+}
+
+export interface TodayPrioritiesResponse {
+  generated_at: string;
+  items: TodayPriorityItem[];
+  attention: {
+    stale_leads: TodayStaleLead[];
+    stale_opportunities: TodayStaleOpportunity[];
+  };
+  summary: {
+    overdue_tasks_count: number;
+    open_tasks_count: number;
+    stale_leads_count: number;
+    stalled_opportunities_count: number;
+    clients_pending_count: number;
+    total_action_items: number;
+    pending_hitl_count: number;
+  };
+}
+
+export interface DashboardAnalyticsResponse {
+  filters: {
+    year: number;
+    quarter: number | null;
+    available_years: number[];
+  };
+  kpis: {
+    total_leads: number;
+    total_clients: number;
+    pipeline_value: number;
+    weighted_pipeline: number;
+    won_value: number;
+    conversion_rate: number;
+    win_rate: number;
+  };
+  lead_funnel: {
+    status: string;
+    label: string;
+    count: number;
+  }[];
+  opp_pipeline: {
+    stage: string;
+    label: string;
+    value: number;
+    count: number;
+  }[];
+  monthly_activity: {
+    month: number;
+    label: string;
+    activities: number;
+    leads: number;
+    opportunities_eur: number;
+  }[];
+  forecast: {
+    quarter: string;
+    label: string;
+    pipeline_eur: number;
+    weighted_eur: number;
+    won_eur: number;
+    count: number;
+  }[];
+  top_clients: {
+    organization_id: number;
+    name: string;
+    cif: string | null;
+    pipeline_eur: number;
+    won_eur: number;
+    total_eur: number;
+    opportunities_count: number;
+  }[];
+  recent_wins: {
+    id: number;
+    title: string;
+    organization_id: number | null;
+    organization_name: string | null;
+    amount_eur: number;
+    updated_at: string;
+  }[];
+  concentration: {
+    top1_name: string | null;
+    top1_share_pct: number;
+    top3_share_pct: number;
+  };
+}
+
+export interface LeadConvertRequest {
+  organization?: {
+    existing_id?: number | null;
+    create?: boolean;
+    name?: string;
+    cif?: string;
+    razon_social?: string;
+    direccion_fiscal?: string;
+    sector?: string;
+    website?: string;
+    phone?: string;
+    email?: string;
+  };
+  client?: {
+    existing_id?: number | null;
+    create?: boolean;
+    full_name?: string;
+    email?: string;
+    phone?: string;
+    job_title?: string;
+    rgpd_consent?: boolean;
+    notes?: string;
+  };
+  opportunity?: {
+    create?: boolean;
+    title?: string;
+    amount_eur?: number;
+    stage?: string;
+    probability?: number;
+    expected_close_date?: string | null;
+    notes?: string;
+  };
+}
+
+export interface LeadConvertResponse {
+  lead: Lead;
+  organization: Organization | null;
+  client: Client | null;
+  opportunity: Opportunity | null;
+}
+
+

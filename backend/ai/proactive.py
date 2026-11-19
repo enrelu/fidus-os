@@ -366,10 +366,15 @@ async def qualify_lead_for_tenant(
     lead_id: int,
     *,
     gateway: Optional[AIGateway] = None,
+    require_byok: bool = False,
 ) -> dict[str, Any]:
     """Cualifica un Lead con el proveedor BYOK del tenant y propone seguimiento HITL."""
     config = get_default_provider_config(session, tenant_id)
     if config is None:
+        if require_byok:
+            raise NoBYOKConfiguredError(
+                "No hay ningún proveedor BYOK activo configurado en el tenant. Configúralo en Ajustes > IA (BYOK)."
+            )
         return {"status": "skipped", "skipped": "no_byok", "lead_id": lead_id}
 
     lead = session.exec(

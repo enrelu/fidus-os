@@ -42,7 +42,8 @@ Hoja de ruta evolutiva de **FidusOS v2** hacia un CRM **Agent-First / AI-Ready**
   - **Radar Comercial Proactivo** (`run_commercial_radar_for_tenant`): detecta oportunidades estancadas, leads `new` sin atender y tareas vencidas, generando un *briefing* ejecutivo y propuestas HITL sin duplicados.
   - **Ingesta de texto libre** (`ingest_free_text_for_tenant`): transforma notas de reunión, correos o llamadas en propuestas validadas (`create_lead`, `create_task`, `update_opportunity`).
 - **Dispatcher híbrido (`backend/ai/dispatcher.py`) + Worker periódico (`backend/worker.py`)**: encola en Redis (`fidus:jobs`) cuando está disponible, con fallback local vía FastAPI `BackgroundTasks` en desarrollo y Radar periódico configurable (`PROACTIVE_RADAR_INTERVAL_SECONDS`).
-- **Supervisión HITL proactiva en Frontend**: banner de estado BYOK/Worker, ejecución manual del Radar Comercial con *briefing* colapsable y caja de ingesta de texto libre en la pantalla principal.
+- **Copiloto CRM Conversacional BYOK (`backend/ai/copilot.py` + `POST /api/v1/ai/proactive/chat` + `CopilotDrawer.tsx`)**: capa de servicios compartida (`backend/crm/services.py`) con bucle de herramientas agnóstico de proveedor (`resumen_crm`, `buscar_crm`, `cuenta_360`, `proponer_accion`, `registrar_interaccion`), accesible desde cualquier vista con aprobación HITL en 1 clic desde el propio chat.
+- **Supervisión HITL proactiva en Frontend**: banner de estado BYOK/Worker, acceso directo al Copiloto CRM, ejecución manual del Radar Comercial con *briefing* colapsable y caja de ingesta de texto libre en la pantalla principal.
 
 ## Hito 6 — Cumplimiento RGPD Ampliado y Conectores *(Siguiente)*
 - Herramientas de exportación y borrado RGPD/LOPDGDD por cliente y tenant.

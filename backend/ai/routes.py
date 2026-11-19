@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import Session, select
 
+from ai.copilot import run_copilot_chat_for_tenant
 from ai.dispatcher import get_worker_heartbeat
 from ai.gateway import AIGateway, AIGatewayError, PROVIDERS_REQUIRING_KEY, get_default_provider_config
 from ai.proactive import (
     NoBYOKConfiguredError,
     ingest_free_text_for_tenant,
+    qualify_lead_for_tenant,
     run_commercial_radar_for_tenant,
 )
 from core.auth import require_actor_context, require_tenant_user
@@ -28,6 +30,7 @@ from core.models import (
     AgentAction,
     AgentActionStatus,
     AgentApiKey,
+    Client,
     Lead,
     Opportunity,
     Organization,
@@ -1004,4 +1007,137 @@ async def trigger_proactive_ingest(
         ) from exc
 
     return ProactiveIngestResponse(**result)
+
+
+class ProactiveQualifyResponse(BaseModel):
+    status: str
+    lead_id: int
+    score: Optional[int] = None
+    model_used: Optional[str] = None
+    created_action: Optional[AgentActionPublic] = None
+
+
+@router.post("/proactive/qualify/{lead_id}", response_model=ProactiveQualifyResponse)
+async def trigger_proactive_qualify_lead(
+    lead_id: int,
+    current_user: User = Depends(require_tenant_user),
+    session: Session = Depends(get_session),
+    gateway: AIGateway = Depends(get_ai_gateway),
+) -> ProactiveQualifyResponse:
+    _validate_tenant_fk(
+        session,
+        Lead,
+        lead_id,
+        current_user.tenant_id,
+        "lead_id",
+    )
+    try:
+        result = await qualify_lead_for_tenant(
+            session,
+            current_user.tenant_id,
+            lead_id,
+            gateway=gateway,
+            require_byok=True,
+        )
+    except NoBYOKConfiguredError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except AIGatewayError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"No se pudo cualificar el lead con el modelo BYOK: {exc}",
+        ) from exc
+
+    return ProactiveQualifyResponse(**result)
+
+
+class CopilotChatMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = PydanticField(min_length=1, max_length=20000)
+
+
+class CopilotContextInput(BaseModel):
+    view: Optional[str] = PydanticField(default=None, max_length=80)
+    entity_type: Optional[str] = PydanticField(default=None, max_length=50)
+    entity_id: Optional[int] = None
+    entity_label: Optional[str] = PydanticField(default=None, max_length=200)
+
+
+class CopilotChatRequest(BaseModel):
+    messages: list[CopilotChatMessage] = PydanticField(min_length=1, max_length=40)
+    organization_id: Optional[int] = None
+    context: Optional[CopilotContextInput] = None
+
+
+class CopilotChatResponse(BaseModel):
+    answer: str
+    tools_used: list[str]
+    created_actions: list[AgentActionPublic]
+    model_used: str
+
+
+@router.post("/proactive/chat", response_model=CopilotChatResponse)
+async def proactive_copilot_chat(
+    payload: CopilotChatRequest,
+    current_user: User = Depends(require_tenant_user),
+    session: Session = Depends(get_session),
+    gateway: AIGateway = Depends(get_ai_gateway),
+) -> CopilotChatResponse:
+    if payload.organization_id is not None:
+        _validate_tenant_fk(
+            session,
+            Organization,
+            payload.organization_id,
+            current_user.tenant_id,
+            "organization_id",
+        )
+
+    if payload.context and payload.context.entity_id is not None and payload.context.entity_type:
+        ctx_model_map: dict[str, Any] = {
+            "organization": Organization,
+            "client": Client,
+            "lead": Lead,
+            "opportunity": Opportunity,
+            "task": Task,
+        }
+        ctx_model = ctx_model_map.get(payload.context.entity_type.strip().lower())
+        if ctx_model is not None:
+            _validate_tenant_fk(
+                session,
+                ctx_model,
+                payload.context.entity_id,
+                current_user.tenant_id,
+                f"context.{payload.context.entity_type}",
+            )
+
+    last_msg = payload.messages[-1]
+    if last_msg.role != "user" or not last_msg.content.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="El último mensaje de la conversación debe ser del usuario y no puede estar vacío.",
+        )
+
+    try:
+        result = await run_copilot_chat_for_tenant(
+            session,
+            current_user.tenant_id,
+            current_user,
+            [{"role": m.role, "content": m.content} for m in payload.messages],
+            organization_id=payload.organization_id,
+            context=payload.context.model_dump(exclude_none=True) if payload.context else None,
+            gateway=gateway,
+        )
+    except NoBYOKConfiguredError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except AIGatewayError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+
+    return CopilotChatResponse(**result)
+
 

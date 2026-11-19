@@ -8,10 +8,10 @@ En lugar de acoplar funciones de IA opacas en un SaaS cerrado, FidusOS v2 sitúa
 
 ## Principios clave
 
-- **Agent-First, Proactivo & Human-in-the-Loop**: Los agentes externos (MCP) y el **Motor Proactivo BYOK** (cualificación automática de leads, Radar Comercial periódico e ingesta libre de notas/emails/llamadas) proponen acciones (`AgentAction`) que quedan registradas y requieren aprobación humana antes de ejecutarse sobre datos sensibles del CRM, con auditoría completa en `ActivityLog` (`actor_type`: `human` / `agent`, `model_used`).
+- **Agent-First, Proactivo & Human-in-the-Loop**: Los agentes externos (MCP), el **Motor Proactivo BYOK** (cualificación automática de leads, Radar Comercial periódico e ingesta libre) y el **Copiloto CRM Conversacional BYOK** (con acceso en vivo al CRM y aprobación HITL integrada) proponen acciones (`AgentAction`) que quedan registradas y requieren aprobación humana antes de ejecutarse sobre datos sensibles, con auditoría completa en `ActivityLog` (`actor_type`: `human` / `agent`, `model_used`).
 - **Arquitectura de IA Dual (MCP + BYOK)**:
   - **MCP Server nativo (`/mcp`)**: Expone herramientas CRM sobre **Streamable HTTP** autenticado por `AgentApiKey` para conectar tus propios clientes o suscripciones (Claude, ChatGPT, Cursor, OpenClaw).
-  - **BYOK / BYO-Model interno**: Cada tenant configura sus propias API keys o modelos locales (**OpenAI, Anthropic, Google Gemini, OpenRouter, Mistral, Ollama / vLLM** compatible con OpenAI) para el motor proactivo en segundo plano (cualificación, radar de pipeline, ingesta de texto libre y briefings).
+  - **BYOK / BYO-Model interno**: Cada tenant configura sus propias API keys o modelos locales (**OpenAI, Anthropic, Google Gemini, OpenRouter, Mistral, Ollama / vLLM** compatible con OpenAI) para el motor proactivo en segundo plano y el Copiloto CRM conversacional.
 - **Multi-tenant estricto**: Aislamiento por `tenant_id` en base de datos, autenticación JWT y validación estricta de referencias entre entidades.
 - **Adaptado al mercado español**:
   - Campos fiscales nativos en organizaciones (`cif`, `razon_social`, `direccion_fiscal`).
@@ -29,7 +29,7 @@ En lugar de acoplar funciones de IA opacas en un SaaS cerrado, FidusOS v2 sitúa
 - **Seguridad**: `cryptography` (Fernet), `PyJWT`, `bcrypt`
 - **IA / Gateway**: `httpx` asíncrono multi-proveedor (OpenAI, Anthropic, Gemini, OpenRouter, Mistral, Ollama / OpenAI-compatible)
 - **Testing**: `pytest` + `httpx` / `TestClient`
-- **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS v4 (supervisión *Human-in-the-Loop*, radar/ingesta proactiva, auditoría de actividad, ajustes BYOK/MCP y CRM operativo)
+- **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS v4 (supervisión *Human-in-the-Loop*, **Copiloto CRM BYOK**, radar/ingesta proactiva, auditoría de actividad, ajustes BYOK/MCP y CRM operativo)
 - **Self-Hosting**: Docker + Docker Compose v2 + Nginx (proxy inverso para SPA, `/api/` y `/mcp`)
 
 ---
