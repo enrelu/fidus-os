@@ -151,10 +151,10 @@ export const TodayPage: React.FC = () => {
     );
   };
 
-  const entityRoute = (type: TodayPriorityItem["entity_type"]) => {
-    if (type === "lead") return "/leads";
-    if (type === "opportunity") return "/opportunities";
-    if (type === "client") return "/clients";
+  const entityRoute = (item: TodayPriorityItem) => {
+    if (item.entity_type === "lead") return `/lead/${item.entity_id}`;
+    if (item.entity_type === "opportunity") return `/opportunity/${item.entity_id}`;
+    if (item.entity_type === "client") return `/client/${item.entity_id}`;
     return "/tasks";
   };
 
@@ -360,7 +360,16 @@ export const TodayPage: React.FC = () => {
                           )}
                         </div>
 
-                        <div className="text-sm font-semibold text-[#121212]">{item.title}</div>
+                        {item.entity_type === "task" ? (
+                          <div className="text-sm font-semibold text-[#121212]">{item.title}</div>
+                        ) : (
+                          <Link
+                            to={entityRoute(item)}
+                            className="block text-sm font-semibold text-[#121212] hover:text-[#0d5fea] hover:underline"
+                          >
+                            {item.title}
+                          </Link>
+                        )}
                         <div className="text-xs text-neutral-500">{item.reason}</div>
                       </div>
 
@@ -411,7 +420,7 @@ export const TodayPage: React.FC = () => {
                         </button>
 
                         <Link
-                          to={entityRoute(item.entity_type)}
+                          to={entityRoute(item)}
                           className="inline-flex items-center gap-1 rounded-lg border border-[#e7e7e9] bg-[#f7f7f8] px-2.5 py-1.5 text-[11px] font-medium text-neutral-700 transition hover:bg-neutral-200/70"
                         >
                           Abrir
@@ -466,9 +475,10 @@ export const TodayPage: React.FC = () => {
                   ) : (
                     <div className="space-y-2">
                       {data.attention.stale_leads.slice(0, 6).map((sl) => (
-                        <div
+                        <Link
                           key={sl.id}
-                          className="rounded-lg border border-[#e7e7e9] bg-[#f7f7f8]/60 p-2.5 space-y-1.5"
+                          to={`/lead/${sl.id}`}
+                          className="block rounded-lg border border-[#e7e7e9] bg-[#f7f7f8]/60 p-2.5 space-y-1.5 transition hover:border-[#0d5fea]/40"
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="truncate text-xs font-semibold text-[#121212]">
@@ -482,7 +492,7 @@ export const TodayPage: React.FC = () => {
                               {sl.days_without_activity}d sin actividad
                             </span>
                           </div>
-                        </div>
+                        </Link>
                       ))}
                     </div>
                   )}
@@ -507,9 +517,10 @@ export const TodayPage: React.FC = () => {
                   ) : (
                     <div className="space-y-2">
                       {data.attention.stale_opportunities.slice(0, 6).map((op) => (
-                        <div
+                        <Link
                           key={op.id}
-                          className="rounded-lg border border-[#e7e7e9] bg-[#f7f7f8]/60 p-2.5 space-y-1"
+                          to={`/opportunity/${op.id}`}
+                          className="block rounded-lg border border-[#e7e7e9] bg-[#f7f7f8]/60 p-2.5 space-y-1 transition hover:border-[#0d5fea]/40"
                         >
                           <div className="flex items-center justify-between gap-2">
                             <span className="truncate text-xs font-semibold text-[#121212]">
@@ -527,7 +538,7 @@ export const TodayPage: React.FC = () => {
                               {!op.has_open_task ? "Sin tarea" : `${op.days_without_activity}d`}
                             </span>
                           </div>
-                        </div>
+                        </Link>
                       ))}
                     </div>
                   )}

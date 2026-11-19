@@ -41,14 +41,19 @@ def normalize_interaction_channel(channel: str) -> str:
     cleaned = channel.strip().lower()
     mapping = {
         "llamada": "llamada",
+        "call": "llamada",
         "reunion": "reunion",
         "reunión": "reunion",
+        "meeting": "reunion",
         "email": "email",
+        "correo": "email",
         "whatsapp": "whatsapp",
+        "nota": "nota",
+        "note": "nota",
     }
     if cleaned not in mapping:
         raise ValueError(
-            "Canal de interacción no válido. Usa uno de: 'llamada', 'reunion', 'email', 'whatsapp'."
+            "Canal de interacción no válido. Usa uno de: 'llamada', 'reunion', 'email', 'whatsapp', 'nota'."
         )
     return mapping[cleaned]
 
@@ -1175,4 +1180,815 @@ def get_dashboard_analytics_for_tenant(
             "top3_share_pct": top3_share_pct,
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Fase 2: Búsqueda global, Enriquecimiento CRM, Ficha 360 y Feed de Actividad
+# ---------------------------------------------------------------------------
+
+
+def _safe_json_loads(raw: Optional[str]) -> Optional[dict[str, Any]]:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return parsed
+        return None
+    except Exception:
+        return None
+
+
+def _build_entity_label_map(session: Session, tenant_id: int) -> dict[tuple[str, int], str]:
+    labels: dict[tuple[str, int], str] = {}
+    for org in session.exec(select(Organization).where(Organization.tenant_id == tenant_id)).all():
+        if org.id is not None:
+            labels[("organization", org.id)] = org.name
+    for cli in session.exec(select(Client).where(Client.tenant_id == tenant_id)).all():
+        if cli.id is not None:
+            labels[("client", cli.id)] = cli.full_name
+    for lead in session.exec(select(Lead).where(Lead.tenant_id == tenant_id)).all():
+        if lead.id is not None:
+            labels[("lead", lead.id)] = lead.full_name
+    for opp in session.exec(select(Opportunity).where(Opportunity.tenant_id == tenant_id)).all():
+        if opp.id is not None:
+            labels[("opportunity", opp.id)] = opp.title
+    for task in session.exec(select(Task).where(Task.tenant_id == tenant_id)).all():
+        if task.id is not None:
+            labels[("task", task.id)] = task.title
+    return labels
+
+
+def _format_activity_description(
+    act: ActivityLog,
+    entity_labels: dict[tuple[str, int], str],
+) -> tuple[str, Optional[str], Optional[dict[str, Any]]]:
+    details = _safe_json_loads(act.details_json)
+    entity_label = (
+        entity_labels.get((act.entity_type, act.entity_id))
+        if act.entity_id is not None
+        else None
+    )
+    target_txt = entity_label or (f"{act.entity_type} #{act.entity_id}" if act.entity_id else act.entity_type)
+    action = (act.action or "").strip()
+
+    if action.startswith("interaction:"):
+        channel = action.split(":", 1)[1]
+        summary = (details or {}).get("summary") or ""
+        outcome = (details or {}).get("outcome")
+        channel_labels = {
+            "llamada": "Llamada",
+            "reunion": "Reunión",
+            "email": "Email",
+            "whatsapp": "WhatsApp",
+            "nota": "Nota",
+        }
+        ch_label = channel_labels.get(channel, channel.capitalize())
+        base = f"{ch_label} en {target_txt}"
+        if summary:
+            base = f"{base}: {summary}"
+        if outcome:
+            base = f"{base} (Resultado: {outcome})"
+        return base, entity_label, details
+
+    if action == "status_change" and details:
+        return (
+            f"Cambio de estado en {target_txt}: {details.get('from_status', '—')} → {details.get('to_status', '—')}",
+            entity_label,
+            details,
+        )
+    if action == "stage_change" and details:
+        return (
+            f"Cambio de etapa en {target_txt}: {details.get('from_stage', '—')} → {details.get('to_stage', '—')}",
+            entity_label,
+            details,
+        )
+    if action == "potential_update" and details:
+        return (
+            f"Potencial actualizado en {target_txt}: {details.get('potential', '—')}",
+            entity_label,
+            details,
+        )
+    if action == "convert":
+        return f"Lead convertido a CRM: {target_txt}", entity_label, details
+    if action == "create":
+        return f"Alta de {act.entity_type}: {target_txt}", entity_label, details
+    if action == "update":
+        fields = (details or {}).get("updated_fields")
+        suffix = f" ({', '.join(str(f) for f in fields)})" if isinstance(fields, list) and fields else ""
+        return f"Actualización en {target_txt}{suffix}", entity_label, details
+    if action == "delete":
+        deleted_name = (details or {}).get("label") or target_txt
+        return f"Eliminado {act.entity_type}: {deleted_name}", entity_label, details
+    if action in {"qualify_lead", "lead_qualification"}:
+        score = (details or {}).get("score")
+        return (
+            f"Cualificación IA en {target_txt}" + (f" (Score: {score}/100)" if score is not None else ""),
+            entity_label,
+            details,
+        )
+
+    return f"{action} · {target_txt}", entity_label, details
+
+
+def serialize_activity_log(
+    act: ActivityLog,
+    entity_labels: dict[tuple[str, int], str],
+) -> dict[str, Any]:
+    description, entity_label, details = _format_activity_description(act, entity_labels)
+    created_iso = act.created_at.isoformat()
+    return {
+        "id": act.id,
+        "tenant_id": act.tenant_id,
+        "actor_type": act.actor_type,
+        "actor_name": act.actor_name,
+        "user_id": act.user_id,
+        "model_used": act.model_used,
+        "action": act.action,
+        "entity_type": act.entity_type,
+        "entity_id": act.entity_id,
+        "entity_label": entity_label,
+        "description": description,
+        "details": details,
+        "details_json": act.details_json,
+        "timestamp": created_iso,
+        "created_at": created_iso,
+    }
+
+
+def list_activities_for_tenant(
+    session: Session,
+    tenant_id: int,
+    *,
+    actor_type: Optional[str] = None,
+    entity_type: Optional[str] = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(int(limit), 500))
+    stmt = select(ActivityLog).where(ActivityLog.tenant_id == tenant_id)
+    if actor_type is not None:
+        stmt = stmt.where(ActivityLog.actor_type == actor_type)
+    if entity_type is not None:
+        stmt = stmt.where(ActivityLog.entity_type == entity_type)
+    stmt = stmt.order_by(col(ActivityLog.created_at).desc(), col(ActivityLog.id).desc()).limit(safe_limit)
+    rows = session.exec(stmt).all()
+    entity_labels = _build_entity_label_map(session, tenant_id)
+    return [serialize_activity_log(act, entity_labels) for act in rows]
+
+
+def global_search_groups_for_tenant(
+    session: Session,
+    tenant_id: int,
+    query: str,
+    *,
+    limit: int = 6,
+) -> dict[str, Any]:
+    """Búsqueda global multi-entidad agrupada para el buscador de cabecera."""
+    term = query.strip().lower()
+    if not term:
+        return {"query": "", "groups": []}
+    safe_limit = max(1, min(int(limit), 20))
+
+    orgs = session.exec(
+        select(Organization)
+        .where(
+            Organization.tenant_id == tenant_id,
+            or_(
+                func.lower(col(Organization.name)).contains(term),
+                func.lower(func.coalesce(col(Organization.cif), "")).contains(term),
+                func.lower(func.coalesce(col(Organization.razon_social), "")).contains(term),
+                func.lower(func.coalesce(col(Organization.email), "")).contains(term),
+                func.lower(func.coalesce(col(Organization.website), "")).contains(term),
+                func.lower(func.coalesce(col(Organization.sector), "")).contains(term),
+            ),
+        )
+        .order_by(col(Organization.id).desc())
+        .limit(safe_limit)
+    ).all()
+
+    clients = session.exec(
+        select(Client)
+        .where(
+            Client.tenant_id == tenant_id,
+            or_(
+                func.lower(col(Client.full_name)).contains(term),
+                func.lower(func.coalesce(col(Client.email), "")).contains(term),
+                func.lower(func.coalesce(col(Client.phone), "")).contains(term),
+                func.lower(func.coalesce(col(Client.job_title), "")).contains(term),
+            ),
+        )
+        .order_by(col(Client.id).desc())
+        .limit(safe_limit)
+    ).all()
+
+    leads = session.exec(
+        select(Lead)
+        .where(
+            Lead.tenant_id == tenant_id,
+            or_(
+                func.lower(col(Lead.full_name)).contains(term),
+                func.lower(func.coalesce(col(Lead.email), "")).contains(term),
+                func.lower(func.coalesce(col(Lead.phone), "")).contains(term),
+                func.lower(func.coalesce(col(Lead.company_name), "")).contains(term),
+            ),
+        )
+        .order_by(col(Lead.id).desc())
+        .limit(safe_limit)
+    ).all()
+
+    opps = session.exec(
+        select(Opportunity)
+        .where(
+            Opportunity.tenant_id == tenant_id,
+            or_(
+                func.lower(col(Opportunity.title)).contains(term),
+                func.lower(col(Opportunity.stage)).contains(term),
+                func.lower(func.coalesce(col(Opportunity.notes), "")).contains(term),
+            ),
+        )
+        .order_by(col(Opportunity.id).desc())
+        .limit(safe_limit)
+    ).all()
+
+    tasks = session.exec(
+        select(Task)
+        .where(
+            Task.tenant_id == tenant_id,
+            or_(
+                func.lower(col(Task.title)).contains(term),
+                func.lower(func.coalesce(col(Task.description), "")).contains(term),
+            ),
+        )
+        .order_by(col(Task.id).desc())
+        .limit(safe_limit)
+    ).all()
+
+    org_names = {
+        o.id: o.name
+        for o in session.exec(select(Organization).where(Organization.tenant_id == tenant_id)).all()
+        if o.id is not None
+    }
+
+    groups: list[dict[str, Any]] = []
+    if orgs:
+        groups.append(
+            {
+                "type": "organization",
+                "label": "Organizaciones",
+                "items": [
+                    {
+                        "id": o.id,
+                        "title": o.name,
+                        "subtitle": " · ".join(p for p in [o.cif, o.razon_social or o.sector] if p) or "Organización",
+                        "href": f"/organization/{o.id}",
+                    }
+                    for o in orgs
+                ],
+            }
+        )
+    if clients:
+        groups.append(
+            {
+                "type": "client",
+                "label": "Clientes",
+                "items": [
+                    {
+                        "id": c.id,
+                        "title": c.full_name,
+                        "subtitle": " · ".join(
+                            p
+                            for p in [
+                                org_names.get(c.organization_id) if c.organization_id else None,
+                                c.job_title or c.email,
+                            ]
+                            if p
+                        )
+                        or "Cliente",
+                        "href": f"/client/{c.id}",
+                    }
+                    for c in clients
+                ],
+            }
+        )
+    if leads:
+        groups.append(
+            {
+                "type": "lead",
+                "label": "Leads",
+                "items": [
+                    {
+                        "id": l.id,
+                        "title": l.full_name,
+                        "subtitle": " · ".join(p for p in [l.company_name, l.status] if p) or "Lead",
+                        "href": f"/lead/{l.id}",
+                    }
+                    for l in leads
+                ],
+            }
+        )
+    if opps:
+        groups.append(
+            {
+                "type": "opportunity",
+                "label": "Oportunidades",
+                "items": [
+                    {
+                        "id": op.id,
+                        "title": op.title,
+                        "subtitle": " · ".join(
+                            p
+                            for p in [
+                                org_names.get(op.organization_id) if op.organization_id else None,
+                                f"{op.amount_eur:,.2f} EUR",
+                            ]
+                            if p
+                        ),
+                        "href": f"/opportunity/{op.id}",
+                    }
+                    for op in opps
+                ],
+            }
+        )
+    if tasks:
+        groups.append(
+            {
+                "type": "task",
+                "label": "Tareas",
+                "items": [
+                    {
+                        "id": t.id,
+                        "title": t.title,
+                        "subtitle": " · ".join(
+                            p
+                            for p in [
+                                org_names.get(t.organization_id) if t.organization_id else None,
+                                t.status,
+                            ]
+                            if p
+                        ),
+                        "href": "/tasks",
+                    }
+                    for t in tasks
+                ],
+            }
+        )
+
+    return {"query": query.strip(), "groups": groups}
+
+
+def enrich_organizations_for_tenant(
+    session: Session,
+    tenant_id: int,
+    orgs: list[Organization],
+) -> list[dict[str, Any]]:
+    if not orgs:
+        return []
+    clients = session.exec(select(Client).where(Client.tenant_id == tenant_id)).all()
+    opps = session.exec(select(Opportunity).where(Opportunity.tenant_id == tenant_id)).all()
+    tasks = session.exec(
+        select(Task).where(
+            Task.tenant_id == tenant_id,
+            col(Task.status).notin_(["completed", "cancelled"]),
+        )
+    ).all()
+
+    clients_by_org: dict[int, list[Client]] = {}
+    for c in clients:
+        if c.organization_id is not None:
+            clients_by_org.setdefault(c.organization_id, []).append(c)
+
+    open_opps_by_org: dict[int, list[Opportunity]] = {}
+    for op in opps:
+        if op.organization_id is not None and (op.stage or "").strip().lower() not in _CLOSED_OPP_STAGES:
+            open_opps_by_org.setdefault(op.organization_id, []).append(op)
+
+    open_tasks_count_by_org: dict[int, int] = {}
+    for t in tasks:
+        if t.organization_id is not None:
+            open_tasks_count_by_org[t.organization_id] = open_tasks_count_by_org.get(t.organization_id, 0) + 1
+
+    result: list[dict[str, Any]] = []
+    for org in orgs:
+        oid = org.id or 0
+        org_clients = clients_by_org.get(oid, [])
+        org_open_opps = open_opps_by_org.get(oid, [])
+        result.append(
+            {
+                "id": org.id,
+                "tenant_id": org.tenant_id,
+                "name": org.name,
+                "cif": org.cif,
+                "razon_social": org.razon_social,
+                "direccion_fiscal": org.direccion_fiscal,
+                "sector": org.sector,
+                "website": org.website,
+                "phone": org.phone,
+                "email": org.email,
+                "notes": org.notes,
+                "created_at": org.created_at.isoformat(),
+                "updated_at": org.updated_at.isoformat(),
+                "contacts_count": len(org_clients),
+                "contacts_preview": [
+                    {
+                        "id": c.id,
+                        "full_name": c.full_name,
+                        "job_title": c.job_title,
+                        "email": c.email,
+                    }
+                    for c in org_clients[:10]
+                ],
+                "open_opportunities_count": len(org_open_opps),
+                "open_pipeline_eur": round(sum(float(op.amount_eur) for op in org_open_opps), 2),
+                "open_tasks_count": open_tasks_count_by_org.get(oid, 0),
+            }
+        )
+    return result
+
+
+def enrich_clients_for_tenant(
+    session: Session,
+    tenant_id: int,
+    clients: list[Client],
+) -> list[dict[str, Any]]:
+    if not clients:
+        return []
+    orgs = session.exec(select(Organization).where(Organization.tenant_id == tenant_id)).all()
+    org_name_by_id = {o.id: o.name for o in orgs if o.id is not None}
+
+    opps = session.exec(select(Opportunity).where(Opportunity.tenant_id == tenant_id)).all()
+    leads = session.exec(select(Lead).where(Lead.tenant_id == tenant_id)).all()
+    lead_by_id = {l.id: l for l in leads if l.id is not None}
+    lead_by_email = {
+        (l.email or "").strip().lower(): l
+        for l in leads
+        if l.email and l.email.strip()
+    }
+
+    open_opps_by_client: dict[int, list[Opportunity]] = {}
+    linked_lead_score_by_client: dict[int, int] = {}
+    for op in opps:
+        if op.client_id is not None:
+            if (op.stage or "").strip().lower() not in _CLOSED_OPP_STAGES:
+                open_opps_by_client.setdefault(op.client_id, []).append(op)
+            if op.lead_id is not None and op.lead_id in lead_by_id:
+                ld = lead_by_id[op.lead_id]
+                if ld.score is not None:
+                    linked_lead_score_by_client[op.client_id] = ld.score
+
+    potential_logs = session.exec(
+        select(ActivityLog)
+        .where(
+            ActivityLog.tenant_id == tenant_id,
+            ActivityLog.entity_type == "client",
+            ActivityLog.action == "potential_update",
+            ActivityLog.entity_id.is_not(None),  # type: ignore[union-attr]
+        )
+        .order_by(col(ActivityLog.id).desc())
+    ).all()
+    potential_override: dict[int, str] = {}
+    for act in potential_logs:
+        if act.entity_id is not None and act.entity_id not in potential_override:
+            parsed = _safe_json_loads(act.details_json)
+            pot = (parsed or {}).get("potential")
+            if pot in {"low", "medium", "high"}:
+                potential_override[act.entity_id] = str(pot)
+
+    result: list[dict[str, Any]] = []
+    for cli in clients:
+        cid = cli.id or 0
+        c_open_opps = open_opps_by_client.get(cid, [])
+        open_pipeline = round(sum(float(op.amount_eur) for op in c_open_opps), 2)
+
+        # Score calculado (o heredado del lead convertido)
+        score = linked_lead_score_by_client.get(cid)
+        if score is None and cli.email:
+            matched_lead = lead_by_email.get(cli.email.strip().lower())
+            if matched_lead and matched_lead.score is not None:
+                score = matched_lead.score
+        if score is None:
+            calc = 30
+            if cli.rgpd_consent:
+                calc += 20
+            if open_pipeline > 0:
+                calc += 20
+            if open_pipeline >= 10000:
+                calc += 15
+            if cli.email:
+                calc += 5
+            if cli.phone:
+                calc += 5
+            if cli.job_title:
+                calc += 5
+            score = min(100, calc)
+
+        potential = potential_override.get(cid)
+        if potential is None:
+            if open_pipeline >= 10000 or score >= 75:
+                potential = "high"
+            elif open_pipeline > 0 or cli.rgpd_consent:
+                potential = "medium"
+            else:
+                potential = "low"
+
+        result.append(
+            {
+                "id": cli.id,
+                "tenant_id": cli.tenant_id,
+                "organization_id": cli.organization_id,
+                "organization_name": org_name_by_id.get(cli.organization_id) if cli.organization_id else None,
+                "full_name": cli.full_name,
+                "email": cli.email,
+                "phone": cli.phone,
+                "job_title": cli.job_title,
+                "rgpd_consent": cli.rgpd_consent,
+                "rgpd_consent_date": cli.rgpd_consent_date.isoformat() if cli.rgpd_consent_date else None,
+                "notes": cli.notes,
+                "created_at": cli.created_at.isoformat(),
+                "updated_at": cli.updated_at.isoformat(),
+                "open_opportunities_count": len(c_open_opps),
+                "open_pipeline_eur": open_pipeline,
+                "score": score,
+                "potential": potential,
+            }
+        )
+    return result
+
+
+def enrich_opportunities_for_tenant(
+    session: Session,
+    tenant_id: int,
+    opps: list[Opportunity],
+) -> list[dict[str, Any]]:
+    if not opps:
+        return []
+    orgs = session.exec(select(Organization).where(Organization.tenant_id == tenant_id)).all()
+    org_names = {o.id: o.name for o in orgs if o.id is not None}
+    clients = session.exec(select(Client).where(Client.tenant_id == tenant_id)).all()
+    client_names = {c.id: c.full_name for c in clients if c.id is not None}
+
+    return [
+        {
+            "id": op.id,
+            "tenant_id": op.tenant_id,
+            "organization_id": op.organization_id,
+            "organization_name": org_names.get(op.organization_id) if op.organization_id else None,
+            "client_id": op.client_id,
+            "client_name": client_names.get(op.client_id) if op.client_id else None,
+            "lead_id": op.lead_id,
+            "title": op.title,
+            "amount_eur": op.amount_eur,
+            "currency": op.currency,
+            "stage": op.stage,
+            "probability": op.probability,
+            "expected_close_date": op.expected_close_date.isoformat() if op.expected_close_date else None,
+            "notes": op.notes,
+            "created_at": op.created_at.isoformat(),
+            "updated_at": op.updated_at.isoformat(),
+        }
+        for op in opps
+    ]
+
+
+def get_entity_360_for_tenant(
+    session: Session,
+    tenant_id: int,
+    entity_type: str,
+    entity_id: int,
+) -> dict[str, Any]:
+    """Devuelve la vista 360 unificada para lead, client, organization u opportunity."""
+    etype = entity_type.strip().lower()
+    if etype not in {"lead", "client", "organization", "opportunity"}:
+        raise ValueError("Tipo de entidad 360 no soportado. Usa: lead, client, organization u opportunity.")
+
+    entity_labels = _build_entity_label_map(session, tenant_id)
+    org_dict: Optional[dict[str, Any]] = None
+    clients_list: list[dict[str, Any]] = []
+    leads_list: list[dict[str, Any]] = []
+    opps_list: list[dict[str, Any]] = []
+    tasks_rows: list[Task] = []
+    activity_filters = []
+
+    if etype == "organization":
+        org = session.exec(
+            select(Organization).where(Organization.id == entity_id, Organization.tenant_id == tenant_id)
+        ).first()
+        if org is None:
+            raise LookupError(f"Organización {entity_id} no encontrada en el tenant.")
+        org_dict = enrich_organizations_for_tenant(session, tenant_id, [org])[0]
+        raw_clients = list(
+            session.exec(
+                select(Client)
+                .where(Client.tenant_id == tenant_id, Client.organization_id == entity_id)
+                .order_by(col(Client.id).desc())
+            ).all()
+        )
+        clients_list = enrich_clients_for_tenant(session, tenant_id, raw_clients)
+        raw_leads = list(
+            session.exec(
+                select(Lead)
+                .where(Lead.tenant_id == tenant_id, Lead.organization_id == entity_id)
+                .order_by(col(Lead.id).desc())
+            ).all()
+        )
+        leads_list = [l.model_dump(mode="json") for l in raw_leads]
+        raw_opps = list(
+            session.exec(
+                select(Opportunity)
+                .where(Opportunity.tenant_id == tenant_id, Opportunity.organization_id == entity_id)
+                .order_by(col(Opportunity.id).desc())
+            ).all()
+        )
+        opps_list = enrich_opportunities_for_tenant(session, tenant_id, raw_opps)
+
+        client_ids = [c.id for c in raw_clients if c.id is not None]
+        lead_ids = [l.id for l in raw_leads if l.id is not None]
+        opp_ids = [op.id for op in raw_opps if op.id is not None]
+
+        task_filters = [col(Task.organization_id) == entity_id]
+        if client_ids:
+            task_filters.append(col(Task.client_id).in_(client_ids))
+        if opp_ids:
+            task_filters.append(col(Task.opportunity_id).in_(opp_ids))
+        tasks_rows = list(
+            session.exec(
+                select(Task)
+                .where(Task.tenant_id == tenant_id, or_(*task_filters))
+                .order_by(col(Task.id).desc())
+            ).all()
+        )
+        task_ids = [t.id for t in tasks_rows if t.id is not None]
+
+        activity_filters = [
+            (col(ActivityLog.entity_type) == "organization") & (col(ActivityLog.entity_id) == entity_id)
+        ]
+        if client_ids:
+            activity_filters.append((col(ActivityLog.entity_type) == "client") & col(ActivityLog.entity_id).in_(client_ids))
+        if lead_ids:
+            activity_filters.append((col(ActivityLog.entity_type) == "lead") & col(ActivityLog.entity_id).in_(lead_ids))
+        if opp_ids:
+            activity_filters.append((col(ActivityLog.entity_type) == "opportunity") & col(ActivityLog.entity_id).in_(opp_ids))
+        if task_ids:
+            activity_filters.append((col(ActivityLog.entity_type) == "task") & col(ActivityLog.entity_id).in_(task_ids))
+        entity_payload = org_dict
+
+    elif etype == "client":
+        cli = session.exec(
+            select(Client).where(Client.id == entity_id, Client.tenant_id == tenant_id)
+        ).first()
+        if cli is None:
+            raise LookupError(f"Cliente {entity_id} no encontrado en el tenant.")
+        cli_dict = enrich_clients_for_tenant(session, tenant_id, [cli])[0]
+        clients_list = [cli_dict]
+        if cli.organization_id is not None:
+            org = session.exec(
+                select(Organization).where(Organization.id == cli.organization_id, Organization.tenant_id == tenant_id)
+            ).first()
+            if org is not None:
+                org_dict = enrich_organizations_for_tenant(session, tenant_id, [org])[0]
+        raw_opps = list(
+            session.exec(
+                select(Opportunity)
+                .where(Opportunity.tenant_id == tenant_id, Opportunity.client_id == entity_id)
+                .order_by(col(Opportunity.id).desc())
+            ).all()
+        )
+        opps_list = enrich_opportunities_for_tenant(session, tenant_id, raw_opps)
+        opp_ids = [op.id for op in raw_opps if op.id is not None]
+        task_filters = [col(Task.client_id) == entity_id]
+        if opp_ids:
+            task_filters.append(col(Task.opportunity_id).in_(opp_ids))
+        tasks_rows = list(
+            session.exec(
+                select(Task)
+                .where(Task.tenant_id == tenant_id, or_(*task_filters))
+                .order_by(col(Task.id).desc())
+            ).all()
+        )
+        task_ids = [t.id for t in tasks_rows if t.id is not None]
+        activity_filters = [
+            (col(ActivityLog.entity_type) == "client") & (col(ActivityLog.entity_id) == entity_id)
+        ]
+        if opp_ids:
+            activity_filters.append((col(ActivityLog.entity_type) == "opportunity") & col(ActivityLog.entity_id).in_(opp_ids))
+        if task_ids:
+            activity_filters.append((col(ActivityLog.entity_type) == "task") & col(ActivityLog.entity_id).in_(task_ids))
+        entity_payload = cli_dict
+
+    elif etype == "lead":
+        lead = session.exec(
+            select(Lead).where(Lead.id == entity_id, Lead.tenant_id == tenant_id)
+        ).first()
+        if lead is None:
+            raise LookupError(f"Lead {entity_id} no encontrado en el tenant.")
+        lead_dict = lead.model_dump(mode="json")
+        if lead.organization_id is not None:
+            org = session.exec(
+                select(Organization).where(Organization.id == lead.organization_id, Organization.tenant_id == tenant_id)
+            ).first()
+            if org is not None:
+                org_dict = enrich_organizations_for_tenant(session, tenant_id, [org])[0]
+                lead_dict["organization_name"] = org.name
+        leads_list = [lead_dict]
+
+        raw_opps = list(
+            session.exec(
+                select(Opportunity)
+                .where(Opportunity.tenant_id == tenant_id, Opportunity.lead_id == entity_id)
+                .order_by(col(Opportunity.id).desc())
+            ).all()
+        )
+        opps_list = enrich_opportunities_for_tenant(session, tenant_id, raw_opps)
+        opp_ids = [op.id for op in raw_opps if op.id is not None]
+        client_ids = [op.client_id for op in raw_opps if op.client_id is not None]
+        if client_ids:
+            raw_clients = list(
+                session.exec(
+                    select(Client).where(Client.tenant_id == tenant_id, col(Client.id).in_(client_ids))
+                ).all()
+            )
+            clients_list = enrich_clients_for_tenant(session, tenant_id, raw_clients)
+
+        task_filters = []
+        if opp_ids:
+            task_filters.append(col(Task.opportunity_id).in_(opp_ids))
+        if lead.organization_id is not None:
+            task_filters.append(col(Task.organization_id) == lead.organization_id)
+        if task_filters:
+            tasks_rows = list(
+                session.exec(
+                    select(Task)
+                    .where(Task.tenant_id == tenant_id, or_(*task_filters))
+                    .order_by(col(Task.id).desc())
+                ).all()
+            )
+        task_ids = [t.id for t in tasks_rows if t.id is not None]
+        activity_filters = [
+            (col(ActivityLog.entity_type) == "lead") & (col(ActivityLog.entity_id) == entity_id)
+        ]
+        if opp_ids:
+            activity_filters.append((col(ActivityLog.entity_type) == "opportunity") & col(ActivityLog.entity_id).in_(opp_ids))
+        if task_ids:
+            activity_filters.append((col(ActivityLog.entity_type) == "task") & col(ActivityLog.entity_id).in_(task_ids))
+        entity_payload = lead_dict
+
+    else:  # opportunity
+        opp = session.exec(
+            select(Opportunity).where(Opportunity.id == entity_id, Opportunity.tenant_id == tenant_id)
+        ).first()
+        if opp is None:
+            raise LookupError(f"Oportunidad {entity_id} no encontrada en el tenant.")
+        opp_dict = enrich_opportunities_for_tenant(session, tenant_id, [opp])[0]
+        opps_list = [opp_dict]
+        if opp.organization_id is not None:
+            org = session.exec(
+                select(Organization).where(Organization.id == opp.organization_id, Organization.tenant_id == tenant_id)
+            ).first()
+            if org is not None:
+                org_dict = enrich_organizations_for_tenant(session, tenant_id, [org])[0]
+        if opp.client_id is not None:
+            cli = session.exec(
+                select(Client).where(Client.id == opp.client_id, Client.tenant_id == tenant_id)
+            ).first()
+            if cli is not None:
+                clients_list = enrich_clients_for_tenant(session, tenant_id, [cli])
+        if opp.lead_id is not None:
+            ld = session.exec(
+                select(Lead).where(Lead.id == opp.lead_id, Lead.tenant_id == tenant_id)
+            ).first()
+            if ld is not None:
+                leads_list = [ld.model_dump(mode="json")]
+        tasks_rows = list(
+            session.exec(
+                select(Task)
+                .where(Task.tenant_id == tenant_id, Task.opportunity_id == entity_id)
+                .order_by(col(Task.id).desc())
+            ).all()
+        )
+        task_ids = [t.id for t in tasks_rows if t.id is not None]
+        activity_filters = [
+            (col(ActivityLog.entity_type) == "opportunity") & (col(ActivityLog.entity_id) == entity_id)
+        ]
+        if task_ids:
+            activity_filters.append((col(ActivityLog.entity_type) == "task") & col(ActivityLog.entity_id).in_(task_ids))
+        entity_payload = opp_dict
+
+    raw_activities = session.exec(
+        select(ActivityLog)
+        .where(ActivityLog.tenant_id == tenant_id, or_(*activity_filters))
+        .order_by(col(ActivityLog.created_at).desc(), col(ActivityLog.id).desc())
+        .limit(100)
+    ).all()
+
+    return {
+        "entity_type": etype,
+        "entity_id": entity_id,
+        "entity": entity_payload,
+        "organization": org_dict,
+        "clients": clients_list,
+        "leads": leads_list,
+        "opportunities": opps_list,
+        "tasks": [t.model_dump(mode="json") for t in tasks_rows],
+        "activities": [serialize_activity_log(act, entity_labels) for act in raw_activities],
+    }
+
 

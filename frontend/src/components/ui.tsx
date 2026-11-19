@@ -117,3 +117,70 @@ export const Modal: React.FC<ModalProps> = ({
     </div>
   );
 };
+
+export interface ChipSelectOption {
+  value: string;
+  label: string;
+  pillClass?: string;
+}
+
+interface ChipSelectProps {
+  value: string;
+  options: ChipSelectOption[];
+  disabled?: boolean;
+  onChange: (value: string) => void;
+  ariaLabel?: string;
+}
+
+export const ChipSelect: React.FC<ChipSelectProps> = ({
+  value,
+  options,
+  disabled = false,
+  onChange,
+  ariaLabel,
+}) => {
+  const current = options.find((opt) => opt.value === value) || options[0];
+  return (
+    <select
+      aria-label={ariaLabel}
+      value={value}
+      disabled={disabled}
+      onChange={(e) => onChange(e.target.value)}
+      className={`rounded-md border px-2 py-1 text-[11px] font-medium transition focus:border-[#0d5fea] focus:outline-none disabled:cursor-not-allowed disabled:opacity-70 ${
+        current?.pillClass || "border-[#e7e7e9] bg-white text-[#121212]"
+      }`}
+    >
+      {options.map((opt) => (
+        <option key={opt.value} value={opt.value} className="bg-white text-[#121212]">
+          {opt.label}
+        </option>
+      ))}
+    </select>
+  );
+};
+
+export const ActorBadge: React.FC<{
+  actorType: "human" | "agent" | string;
+  actorName: string;
+  modelUsed?: string | null;
+}> = ({ actorType, actorName, modelUsed }) => {
+  const isAgent = actorType === "agent";
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-[10px] font-semibold ${
+        isAgent
+          ? "border-violet-200 bg-violet-50 text-violet-700"
+          : "border-[#e7e7e9] bg-[#f7f7f8] text-neutral-700"
+      }`}
+    >
+      <span>{isAgent ? "IA" : "Humano"}</span>
+      <span className="font-normal">· {actorName}</span>
+      {isAgent && modelUsed && (
+        <span className="rounded bg-violet-100 px-1 py-0.2 font-mono text-[9px] text-violet-800">
+          {modelUsed}
+        </span>
+      )}
+    </span>
+  );
+};
+

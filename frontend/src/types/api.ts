@@ -136,8 +136,19 @@ export interface ActivityLog {
   action: string;
   entity_type: string;
   entity_id: number | null;
+  entity_label?: string | null;
+  description?: string | null;
+  details?: Record<string, unknown> | null;
   details_json: string | null;
+  timestamp?: string;
   created_at: string;
+}
+
+export interface OrganizationContactPreview {
+  id: number;
+  full_name: string;
+  job_title: string | null;
+  email: string | null;
 }
 
 export interface Organization {
@@ -154,6 +165,11 @@ export interface Organization {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  contacts_count?: number;
+  contacts_preview?: OrganizationContactPreview[];
+  open_opportunities_count?: number;
+  open_pipeline_eur?: number;
+  open_tasks_count?: number;
 }
 
 export interface OrganizationPayload {
@@ -168,10 +184,13 @@ export interface OrganizationPayload {
   notes?: string;
 }
 
+export type ClientPotential = "low" | "medium" | "high";
+
 export interface Client {
   id: number;
   tenant_id: number;
   organization_id: number | null;
+  organization_name?: string | null;
   full_name: string;
   email: string | null;
   phone: string | null;
@@ -181,6 +200,10 @@ export interface Client {
   notes: string | null;
   created_at: string;
   updated_at: string;
+  open_opportunities_count?: number;
+  open_pipeline_eur?: number;
+  score?: number;
+  potential?: ClientPotential;
 }
 
 export interface ClientPayload {
@@ -193,10 +216,15 @@ export interface ClientPayload {
   notes?: string;
 }
 
+export interface ClientUpdatePayload extends Partial<ClientPayload> {
+  potential?: ClientPotential;
+}
+
 export interface Lead {
   id: number;
   tenant_id: number;
   organization_id: number | null;
+  organization_name?: string | null;
   full_name: string;
   email: string | null;
   phone: string | null;
@@ -226,7 +254,9 @@ export interface Opportunity {
   id: number;
   tenant_id: number;
   organization_id: number | null;
+  organization_name?: string | null;
   client_id: number | null;
+  client_name?: string | null;
   lead_id: number | null;
   title: string;
   amount_eur: number;
@@ -502,4 +532,46 @@ export interface LeadConvertResponse {
   opportunity: Opportunity | null;
 }
 
+export type GlobalSearchGroupType = "organization" | "client" | "lead" | "opportunity" | "task";
 
+export interface GlobalSearchItem {
+  id: number;
+  title: string;
+  subtitle: string;
+  href: string;
+}
+
+export interface GlobalSearchGroup {
+  type: GlobalSearchGroupType;
+  label: string;
+  items: GlobalSearchItem[];
+}
+
+export interface GlobalSearchResponse {
+  query: string;
+  groups: GlobalSearchGroup[];
+}
+
+export type Entity360Type = "lead" | "client" | "organization" | "opportunity";
+
+export interface Entity360Response {
+  entity_type: Entity360Type;
+  entity_id: number;
+  entity: Record<string, unknown>;
+  organization: Organization | null;
+  clients: Client[];
+  leads: Lead[];
+  opportunities: Opportunity[];
+  tasks: Task[];
+  activities: ActivityLog[];
+}
+
+export type InteractionChannel = "llamada" | "nota" | "reunion" | "email" | "whatsapp";
+
+export interface InteractionCreatePayload {
+  entity_type: Entity360Type;
+  entity_id: number;
+  channel: InteractionChannel;
+  summary: string;
+  outcome?: string;
+}
