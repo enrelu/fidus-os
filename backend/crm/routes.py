@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+import json
+from typing import Any, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, EmailStr, Field as PydanticField
@@ -24,6 +25,10 @@ from core.models import (
     Task,
     User,
     utc_now,
+)
+from crm.services import (
+    get_dashboard_analytics_for_tenant,
+    get_today_priorities_for_tenant,
 )
 
 router = APIRouter(prefix="/api/v1/crm", tags=["CRM"])
@@ -63,6 +68,7 @@ def _record_human_activity(
     action: str,
     entity_type: str,
     entity_id: Optional[int],
+    details: Optional[dict[str, Any]] = None,
 ) -> None:
     log = ActivityLog(
         tenant_id=user.tenant_id,
@@ -73,6 +79,7 @@ def _record_human_activity(
         action=action,
         entity_type=entity_type,
         entity_id=entity_id,
+        details_json=json.dumps(details, ensure_ascii=False) if details is not None else None,
     )
     session.add(log)
 
@@ -419,6 +426,7 @@ def update_lead(
     session: Session = Depends(get_session),
 ) -> Lead:
     lead = _get_owned_or_404(session, Lead, lead_id, current_user.tenant_id, "Lead")
+    previous_status = lead.status
     data = payload.model_dump(exclude_unset=True)
     if "organization_id" in data:
         _assert_fk_owned(session, Organization, data["organization_id"], current_user.tenant_id, "organization_id")
@@ -428,9 +436,216 @@ def update_lead(
         setattr(lead, key, value)
     lead.updated_at = utc_now()
     session.add(lead)
+    if data:
+        status_changed = "status" in data and data["status"] != previous_status
+        _record_human_activity(
+            session,
+            user=current_user,
+            action="status_change" if status_changed else "update",
+            entity_type="lead",
+            entity_id=lead.id,
+            details=(
+                {"from_status": previous_status, "to_status": lead.status}
+                if status_changed
+                else {"updated_fields": sorted(data.keys())}
+            ),
+        )
     session.commit()
     session.refresh(lead)
     return lead
+
+
+class ConvertOrganizationInput(BaseModel):
+    existing_id: Optional[int] = None
+    create: bool = False
+    name: Optional[str] = PydanticField(default=None, max_length=200)
+    cif: Optional[str] = PydanticField(default=None, max_length=20)
+    razon_social: Optional[str] = PydanticField(default=None, max_length=255)
+    direccion_fiscal: Optional[str] = PydanticField(default=None, max_length=500)
+    sector: Optional[str] = PydanticField(default=None, max_length=120)
+    website: Optional[str] = PydanticField(default=None, max_length=255)
+    phone: Optional[str] = PydanticField(default=None, max_length=50)
+    email: Optional[EmailStr] = None
+
+
+class ConvertClientInput(BaseModel):
+    existing_id: Optional[int] = None
+    create: bool = True
+    full_name: Optional[str] = PydanticField(default=None, max_length=200)
+    email: Optional[EmailStr] = None
+    phone: Optional[str] = PydanticField(default=None, max_length=50)
+    job_title: Optional[str] = PydanticField(default=None, max_length=120)
+    rgpd_consent: bool = False
+    notes: Optional[str] = None
+
+
+class ConvertOpportunityInput(BaseModel):
+    create: bool = True
+    title: Optional[str] = PydanticField(default=None, max_length=255)
+    amount_eur: float = PydanticField(default=0.0, ge=0.0)
+    stage: str = PydanticField(default="qualification", max_length=50)
+    probability: int = PydanticField(default=25, ge=0, le=100)
+    expected_close_date: Optional[datetime] = None
+    notes: Optional[str] = None
+
+
+class LeadConvertRequest(BaseModel):
+    organization: Optional[ConvertOrganizationInput] = None
+    client: Optional[ConvertClientInput] = None
+    opportunity: Optional[ConvertOpportunityInput] = None
+
+
+class LeadConvertResponse(BaseModel):
+    lead: Lead
+    organization: Optional[Organization] = None
+    client: Optional[Client] = None
+    opportunity: Optional[Opportunity] = None
+
+
+@router.post("/leads/{lead_id}/convert", response_model=LeadConvertResponse)
+def convert_lead(
+    lead_id: int,
+    payload: Optional[LeadConvertRequest] = None,
+    current_user: User = Depends(require_tenant_user),
+    session: Session = Depends(get_session),
+) -> LeadConvertResponse:
+    tenant_id = current_user.tenant_id
+    lead = _get_owned_or_404(session, Lead, lead_id, tenant_id, "Lead")
+    if (lead.status or "").strip().lower() == "converted":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="El lead ya ha sido convertido previamente.",
+        )
+
+    req = payload or LeadConvertRequest()
+    org_obj: Optional[Organization] = None
+
+    if req.organization is not None:
+        if req.organization.existing_id is not None:
+            org_obj = _get_owned_or_404(
+                session, Organization, req.organization.existing_id, tenant_id, "Organización"
+            )
+        elif req.organization.create or (req.organization.name and req.organization.name.strip()):
+            org_name = (
+                (req.organization.name or "").strip()
+                or (lead.company_name or "").strip()
+                or f"Empresa de {lead.full_name}"
+            )
+            org_obj = Organization(
+                tenant_id=tenant_id,
+                name=org_name[:200],
+                cif=req.organization.cif.strip().upper() if req.organization.cif else None,
+                razon_social=req.organization.razon_social.strip() if req.organization.razon_social else None,
+                direccion_fiscal=(
+                    req.organization.direccion_fiscal.strip() if req.organization.direccion_fiscal else None
+                ),
+                sector=req.organization.sector.strip() if req.organization.sector else None,
+                website=req.organization.website.strip() if req.organization.website else None,
+                phone=req.organization.phone.strip() if req.organization.phone else None,
+                email=str(req.organization.email) if req.organization.email else None,
+            )
+            session.add(org_obj)
+            session.flush()
+    else:
+        if lead.organization_id is not None:
+            org_obj = _get_owned_or_404(
+                session, Organization, lead.organization_id, tenant_id, "Organización"
+            )
+        elif lead.company_name and lead.company_name.strip():
+            org_obj = Organization(
+                tenant_id=tenant_id,
+                name=lead.company_name.strip()[:200],
+            )
+            session.add(org_obj)
+            session.flush()
+
+    resolved_org_id = org_obj.id if org_obj is not None else lead.organization_id
+
+    client_obj: Optional[Client] = None
+    if req.client is not None:
+        if req.client.existing_id is not None:
+            client_obj = _get_owned_or_404(session, Client, req.client.existing_id, tenant_id, "Cliente")
+        elif req.client.create:
+            client_obj = Client(
+                tenant_id=tenant_id,
+                organization_id=resolved_org_id,
+                full_name=(req.client.full_name or lead.full_name).strip()[:200],
+                email=str(req.client.email) if req.client.email else lead.email,
+                phone=req.client.phone if req.client.phone is not None else lead.phone,
+                job_title=req.client.job_title,
+                rgpd_consent=req.client.rgpd_consent,
+                rgpd_consent_date=utc_now() if req.client.rgpd_consent else None,
+                notes=req.client.notes if req.client.notes is not None else lead.notes,
+            )
+            session.add(client_obj)
+            session.flush()
+    else:
+        client_obj = Client(
+            tenant_id=tenant_id,
+            organization_id=resolved_org_id,
+            full_name=lead.full_name.strip()[:200],
+            email=lead.email,
+            phone=lead.phone,
+            rgpd_consent=False,
+            notes=lead.notes,
+        )
+        session.add(client_obj)
+        session.flush()
+
+    opp_obj: Optional[Opportunity] = None
+    if req.opportunity is None or req.opportunity.create:
+        opp_in = req.opportunity or ConvertOpportunityInput()
+        default_title = f"Oportunidad · {org_obj.name if org_obj else (lead.company_name or lead.full_name)}"
+        opp_obj = Opportunity(
+            tenant_id=tenant_id,
+            organization_id=resolved_org_id,
+            client_id=client_obj.id if client_obj is not None else None,
+            lead_id=lead.id,
+            title=(opp_in.title.strip() if opp_in.title and opp_in.title.strip() else default_title)[:255],
+            amount_eur=opp_in.amount_eur,
+            currency="EUR",
+            stage=opp_in.stage.strip() or "qualification",
+            probability=opp_in.probability,
+            expected_close_date=opp_in.expected_close_date,
+            notes=opp_in.notes,
+        )
+        session.add(opp_obj)
+        session.flush()
+
+    lead.status = "Converted"
+    if resolved_org_id is not None:
+        lead.organization_id = resolved_org_id
+    lead.updated_at = utc_now()
+    session.add(lead)
+
+    _record_human_activity(
+        session,
+        user=current_user,
+        action="convert",
+        entity_type="lead",
+        entity_id=lead.id,
+        details={
+            "organization_id": org_obj.id if org_obj else None,
+            "client_id": client_obj.id if client_obj else None,
+            "opportunity_id": opp_obj.id if opp_obj else None,
+        },
+    )
+
+    session.commit()
+    session.refresh(lead)
+    if org_obj is not None:
+        session.refresh(org_obj)
+    if client_obj is not None:
+        session.refresh(client_obj)
+    if opp_obj is not None:
+        session.refresh(opp_obj)
+
+    return LeadConvertResponse(
+        lead=lead,
+        organization=org_obj,
+        client=client_obj,
+        opportunity=opp_obj,
+    )
 
 
 @router.delete("/leads/{lead_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
@@ -716,3 +931,50 @@ def list_activities(
         stmt = stmt.where(ActivityLog.entity_type == entity_type)
     stmt = stmt.order_by(ActivityLog.id.desc())  # type: ignore[union-attr]
     return list(session.exec(stmt).all())
+
+
+# ---------------------------------------------------------------------------
+# Prioridades (Hoy) y Analítica del Panel (Fase 1)
+# ---------------------------------------------------------------------------
+
+
+@router.get("/priorities/today")
+def get_priorities_today(
+    stale_days: int = Query(default=7, ge=1, le=365),
+    current_user: User = Depends(require_tenant_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    return get_today_priorities_for_tenant(
+        session,
+        current_user.tenant_id,
+        stale_days=stale_days,
+    )
+
+
+@router.get("/priorities/dashboard")
+def get_priorities_dashboard(
+    stale_days: int = Query(default=7, ge=1, le=365),
+    current_user: User = Depends(require_tenant_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    return get_today_priorities_for_tenant(
+        session,
+        current_user.tenant_id,
+        stale_days=stale_days,
+    )
+
+
+@router.get("/analytics/dashboard")
+def get_analytics_dashboard(
+    year: Optional[int] = Query(default=None, ge=2000, le=2100),
+    quarter: Optional[int] = Query(default=None, ge=1, le=4),
+    current_user: User = Depends(require_tenant_user),
+    session: Session = Depends(get_session),
+) -> dict[str, Any]:
+    return get_dashboard_analytics_for_tenant(
+        session,
+        current_user.tenant_id,
+        year=year,
+        quarter=quarter,
+    )
+

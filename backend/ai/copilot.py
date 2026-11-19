@@ -31,13 +31,38 @@ COPILOT_AGENT_NAME = "Copiloto CRM BYOK"
 MAX_TOOL_ITERATIONS = 4
 
 
-def _build_copilot_system_prompt(organization_id: Optional[int]) -> str:
-    focus_hint = (
-        f"Contexto activo seleccionado por el usuario: organization_id={organization_id}. "
-        "Si pregunta por esta cuenta o pide crear tareas/leads sin especificar empresa, ten en cuenta ese organization_id.\n"
-        if organization_id is not None
-        else ""
-    )
+def _build_copilot_system_prompt(
+    organization_id: Optional[int],
+    context: Optional[dict[str, Any]] = None,
+) -> str:
+    focus_parts: list[str] = []
+    if organization_id is not None:
+        focus_parts.append(
+            f"Contexto activo seleccionado por el usuario: organization_id={organization_id}. "
+            "Si pregunta por esta cuenta o pide crear tareas/leads sin especificar empresa, ten en cuenta ese organization_id."
+        )
+    if context:
+        ctx_view = str(context.get("view") or "").strip()
+        ctx_etype = str(context.get("entity_type") or "").strip()
+        ctx_eid = context.get("entity_id")
+        ctx_label = str(context.get("entity_label") or "").strip()
+        ctx_desc: list[str] = []
+        if ctx_view:
+            ctx_desc.append(f"vista={ctx_view}")
+        if ctx_etype:
+            ctx_desc.append(f"entity_type={ctx_etype}")
+        if ctx_eid is not None:
+            ctx_desc.append(f"entity_id={ctx_eid}")
+        if ctx_label:
+            ctx_desc.append(f"etiqueta={ctx_label}")
+        if ctx_desc:
+            focus_parts.append(
+                "Contexto de pantalla actual del usuario: "
+                + ", ".join(ctx_desc)
+                + ". Si el usuario dice 'este lead', 'esta oportunidad', 'esta cuenta' o 'esta tarea', "
+                "refiérete prioritariamente a esta entidad y consulta sus datos con buscar_crm/resumen_crm/cuenta_360 antes de proponer acciones."
+            )
+    focus_hint = ("\n".join(focus_parts) + "\n") if focus_parts else ""
     return (
         "Eres el Copiloto Operativo CRM de FidusOS v2 (mercado español, importes en EUR, datos fiscales con CIF/razón social).\n"
         f"{focus_hint}"
@@ -223,13 +248,14 @@ async def run_copilot_chat_for_tenant(
     messages: list[dict[str, str]],
     *,
     organization_id: Optional[int] = None,
+    context: Optional[dict[str, Any]] = None,
     gateway: Optional[AIGateway] = None,
 ) -> dict[str, Any]:
     """Ejecuta el Copiloto CRM conversacional con bucle de herramientas multi-tenant."""
     config = get_default_provider_config(session, tenant_id)
     if config is None:
         raise NoBYOKConfiguredError(
-            "No hay ningún proveedor BYOK activo configurado en el tenant. Configúralo en Configuración IA."
+            "No hay ningún proveedor BYOK activo configurado en el tenant. Configúralo en Ajustes > IA (BYOK)."
         )
 
     cleaned_messages = [
@@ -241,7 +267,7 @@ async def run_copilot_chat_for_tenant(
         raise ValueError("El historial debe incluir al menos un mensaje de usuario no vacío al final.")
 
     llm_messages: list[dict[str, str]] = [
-        {"role": "system", "content": _build_copilot_system_prompt(organization_id)},
+        {"role": "system", "content": _build_copilot_system_prompt(organization_id, context=context)},
         *cleaned_messages,
     ]
 

@@ -301,7 +301,7 @@ export const SupervisionPage: React.FC<SupervisionPageProps> = ({ onPendingCount
 
             {!proactiveStatus.has_default_byok && (
               <Link
-                to="/configuracion-ia"
+                to="/settings?tab=byok"
                 className="inline-flex items-center rounded-lg bg-amber-900 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-amber-800"
               >
                 Configurar BYOK

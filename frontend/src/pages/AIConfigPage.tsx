@@ -39,7 +39,11 @@ const SCOPE_OPTIONS = [
   { value: "actions:propose", label: "actions:propose (Proponer acciones HITL)" },
 ];
 
-export const AIConfigPage: React.FC = () => {
+export interface AIConfigPageProps {
+  section?: "all" | "byok" | "mcp";
+}
+
+export const AIConfigPage: React.FC<AIConfigPageProps> = ({ section = "all" }) => {
   const [providers, setProviders] = useState<AIProviderConfig[]>([]);
   const [agentKeys, setAgentKeys] = useState<AgentApiKey[]>([]);
   const [loading, setLoading] = useState(true);
@@ -232,16 +236,21 @@ export const AIConfigPage: React.FC = () => {
       )
     : "";
 
+  const showByok = section === "all" || section === "byok";
+  const showMcp = section === "all" || section === "mcp";
+
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-          Configuración IA (BYOK + MCP)
-        </h1>
-        <p className="mt-1 text-sm text-slate-600">
-          Gestiona tus proveedores LLM cifrados con Fernet (BYOK) y las claves de acceso para clientes MCP externos.
-        </p>
-      </div>
+    <div className="space-y-6">
+      {section === "all" && (
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-[#121212]">
+            Configuración IA (BYOK + MCP)
+          </h1>
+          <p className="mt-1 text-sm text-neutral-600">
+            Gestiona tus proveedores LLM cifrados con Fernet (BYOK) y las claves de acceso para clientes MCP externos.
+          </p>
+        </div>
+      )}
 
       {error && (
         <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
@@ -251,7 +260,8 @@ export const AIConfigPage: React.FC = () => {
       )}
 
       {/* Sección 1: Proveedores BYOK */}
-      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-xs space-y-5">
+      {showByok && (
+      <section className="rounded-xl border border-[#e7e7e9] bg-white p-6 space-y-5">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2.5">
             <div className="h-9 w-9 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center">
@@ -484,9 +494,11 @@ export const AIConfigPage: React.FC = () => {
           </div>
         )}
       </section>
+      )}
 
       {/* Sección 2: Claves MCP / Agentes */}
-      <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-xs space-y-5">
+      {showMcp && (
+      <section className="rounded-xl border border-[#e7e7e9] bg-white p-6 space-y-5">
         <div className="flex items-center gap-2.5">
           <div className="h-9 w-9 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
             <KeyRound className="h-5 w-5" />
@@ -656,6 +668,7 @@ export const AIConfigPage: React.FC = () => {
           </div>
         )}
       </section>
+      )}
     </div>
   );
 };

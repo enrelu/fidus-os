@@ -4,21 +4,22 @@ import { Loader2 } from "lucide-react";
 import { aiApi } from "./api/client";
 import { Layout } from "./components/Layout";
 import { AuthProvider, useAuth } from "./context/AuthContext";
-import { AIConfigPage } from "./pages/AIConfigPage";
-import { AuditPage } from "./pages/AuditPage";
 import { CrmPage } from "./pages/CrmPage";
+import { DashboardPage } from "./pages/DashboardPage";
+import { LeadsPage } from "./pages/LeadsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { RegisterPage } from "./pages/RegisterPage";
-import { SupervisionPage } from "./pages/SupervisionPage";
+import { SettingsPage } from "./pages/SettingsPage";
+import { TodayPage } from "./pages/TodayPage";
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const { user, loading } = useAuth();
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-600">
+      <div className="min-h-screen flex items-center justify-center bg-[#f7f7f8] text-neutral-600">
         <div className="flex items-center gap-2 text-sm font-medium">
-          <Loader2 className="h-5 w-5 animate-spin text-indigo-600" />
+          <Loader2 className="h-5 w-5 animate-spin text-[#0d5fea]" />
           Cargando sesión de FidusOS v2...
         </div>
       </div>
@@ -37,9 +38,9 @@ const PublicOnlyRoute: React.FC<{ children: React.ReactNode }> = ({ children }) 
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-slate-50 text-slate-600">
+      <div className="min-h-screen flex items-center justify-center bg-[#f7f7f8] text-neutral-600">
         <div className="flex items-center gap-2 text-sm font-medium">
-          <Loader2 className="h-5 w-5 animate-spin text-indigo-600" />
+          <Loader2 className="h-5 w-5 animate-spin text-[#0d5fea]" />
           Comprobando sesión...
         </div>
       </div>
@@ -47,7 +48,7 @@ const PublicOnlyRoute: React.FC<{ children: React.ReactNode }> = ({ children }) 
   }
 
   if (user) {
-    return <Navigate to="/" replace />;
+    return <Navigate to="/today" replace />;
   }
 
   return <>{children}</>;
@@ -71,7 +72,7 @@ const AppRoutes: React.FC = () => {
           if (active) setPendingCount(items.length);
         })
         .catch(() => {
-          // El badge se sincroniza igualmente al abrir Supervisión HITL
+          // El badge se sincroniza igualmente al abrir Ajustes -> Supervisión HITL
         });
     };
 
@@ -83,6 +84,12 @@ const AppRoutes: React.FC = () => {
       window.removeEventListener("fidus:crm-updated", refreshPending);
     };
   }, [user]);
+
+  const withShell = (element: React.ReactNode) => (
+    <ProtectedRoute>
+      <Layout pendingCount={pendingCount}>{element}</Layout>
+    </ProtectedRoute>
+  );
 
   return (
     <Routes>
@@ -103,47 +110,23 @@ const AppRoutes: React.FC = () => {
         }
       />
 
+      <Route path="/" element={withShell(<TodayPage />)} />
+      <Route path="/today" element={withShell(<TodayPage />)} />
+      <Route path="/dashboard" element={withShell(<DashboardPage />)} />
+      <Route path="/leads" element={withShell(<LeadsPage />)} />
+      <Route path="/opportunities" element={withShell(<CrmPage fixedTab="opportunities" />)} />
+      <Route path="/clients" element={withShell(<CrmPage fixedTab="clients" />)} />
+      <Route path="/organizations" element={withShell(<CrmPage fixedTab="organizations" />)} />
+      <Route path="/tasks" element={withShell(<CrmPage fixedTab="tasks" />)} />
       <Route
-        path="/"
-        element={
-          <ProtectedRoute>
-            <Layout pendingCount={pendingCount}>
-              <SupervisionPage onPendingCountChange={setPendingCount} />
-            </Layout>
-          </ProtectedRoute>
-        }
+        path="/settings"
+        element={withShell(<SettingsPage onPendingCountChange={setPendingCount} />)}
       />
-      <Route
-        path="/auditoria"
-        element={
-          <ProtectedRoute>
-            <Layout pendingCount={pendingCount}>
-              <AuditPage />
-            </Layout>
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/configuracion-ia"
-        element={
-          <ProtectedRoute>
-            <Layout pendingCount={pendingCount}>
-              <AIConfigPage />
-            </Layout>
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/crm"
-        element={
-          <ProtectedRoute>
-            <Layout pendingCount={pendingCount}>
-              <CrmPage />
-            </Layout>
-          </ProtectedRoute>
-        }
-      />
-      <Route path="*" element={<Navigate to="/" replace />} />
+
+      <Route path="/crm" element={<Navigate to="/organizations" replace />} />
+      <Route path="/auditoria" element={<Navigate to="/settings?tab=audit" replace />} />
+      <Route path="/configuracion-ia" element={<Navigate to="/settings?tab=byok" replace />} />
+      <Route path="*" element={<Navigate to="/today" replace />} />
     </Routes>
   );
 };
