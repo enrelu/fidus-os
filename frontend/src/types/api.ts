@@ -274,3 +274,28 @@ export interface TaskPayload {
   status: string;
   priority: string;
 }
+
+export interface ProactiveStatus {
+  has_default_byok: boolean;
+  default_provider: string | null;
+  default_model: string | null;
+  worker_online: boolean;
+  worker_last_heartbeat: string | null;
+  pending_actions_count: number;
+}
+
+export interface ProactiveRadarResponse {
+  briefing: string;
+  findings_count: number;
+  created_actions: AgentAction[];
+}
+
+export interface ProactiveIngestPayload {
+  text: string;
+  organization_id?: number | null;
+}
+
+export interface ProactiveIngestResponse {
+  summary: string;
+  created_actions: AgentAction[];
+}

@@ -10,7 +10,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field as PydanticField
 from sqlmodel import Session, select
 
-from ai.gateway import AIGateway, PROVIDERS_REQUIRING_KEY
+from ai.dispatcher import get_worker_heartbeat
+from ai.gateway import AIGateway, AIGatewayError, PROVIDERS_REQUIRING_KEY, get_default_provider_config
+from ai.proactive import (
+    NoBYOKConfiguredError,
+    ingest_free_text_for_tenant,
+    run_commercial_radar_for_tenant,
+)
 from core.auth import require_actor_context, require_tenant_user
 from core.crypto import encrypt_secret, generate_agent_api_key, mask_encrypted_secret
 from core.database import get_session
@@ -874,3 +880,128 @@ def approve_and_execute_agent_action(
     session.commit()
     session.refresh(action)
     return _to_public_action(action)
+
+
+# ---------------------------------------------------------------------------
+# Rutas del Motor Proactivo BYOK (Hito 5)
+# ---------------------------------------------------------------------------
+
+
+class ProactiveStatusResponse(BaseModel):
+    has_default_byok: bool
+    default_provider: Optional[str]
+    default_model: Optional[str]
+    worker_online: bool
+    worker_last_heartbeat: Optional[str]
+    pending_actions_count: int
+
+
+class ProactiveRadarRequest(BaseModel):
+    stale_days: int = PydanticField(default=7, ge=0, le=365)
+
+
+class ProactiveRadarResponse(BaseModel):
+    briefing: str
+    findings_count: int
+    created_actions: list[AgentActionPublic]
+
+
+class ProactiveIngestRequest(BaseModel):
+    text: str = PydanticField(min_length=1, max_length=20000)
+    organization_id: Optional[int] = None
+
+
+class ProactiveIngestResponse(BaseModel):
+    summary: str
+    created_actions: list[AgentActionPublic]
+
+
+@router.get("/proactive/status", response_model=ProactiveStatusResponse)
+def get_proactive_status(
+    current_user: User = Depends(require_tenant_user),
+    session: Session = Depends(get_session),
+) -> ProactiveStatusResponse:
+    default_cfg = get_default_provider_config(session, current_user.tenant_id)
+    worker_online, worker_last_heartbeat = get_worker_heartbeat()
+    pending_actions = session.exec(
+        select(AgentAction.id).where(
+            AgentAction.tenant_id == current_user.tenant_id,
+            AgentAction.status == AgentActionStatus.PENDING_APPROVAL.value,
+        )
+    ).all()
+
+    return ProactiveStatusResponse(
+        has_default_byok=default_cfg is not None,
+        default_provider=default_cfg.provider if default_cfg else None,
+        default_model=default_cfg.model_name if default_cfg else None,
+        worker_online=worker_online,
+        worker_last_heartbeat=worker_last_heartbeat,
+        pending_actions_count=len(pending_actions),
+    )
+
+
+@router.post("/proactive/radar", response_model=ProactiveRadarResponse)
+async def trigger_proactive_radar(
+    payload: Optional[ProactiveRadarRequest] = None,
+    current_user: User = Depends(require_tenant_user),
+    session: Session = Depends(get_session),
+    gateway: AIGateway = Depends(get_ai_gateway),
+) -> ProactiveRadarResponse:
+    stale_days = payload.stale_days if payload is not None else 7
+    try:
+        result = await run_commercial_radar_for_tenant(
+            session,
+            current_user.tenant_id,
+            stale_days=stale_days,
+            gateway=gateway,
+            require_byok=True,
+        )
+    except NoBYOKConfiguredError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except AIGatewayError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"El modelo BYOK devolvió un formato inválido: {exc}",
+        ) from exc
+
+    return ProactiveRadarResponse(**result)
+
+
+@router.post("/proactive/ingest", response_model=ProactiveIngestResponse)
+async def trigger_proactive_ingest(
+    payload: ProactiveIngestRequest,
+    current_user: User = Depends(require_tenant_user),
+    session: Session = Depends(get_session),
+    gateway: AIGateway = Depends(get_ai_gateway),
+) -> ProactiveIngestResponse:
+    if payload.organization_id is not None:
+        _validate_tenant_fk(
+            session,
+            Organization,
+            payload.organization_id,
+            current_user.tenant_id,
+            "organization_id",
+        )
+
+    try:
+        result = await ingest_free_text_for_tenant(
+            session,
+            current_user.tenant_id,
+            payload.text,
+            organization_id=payload.organization_id,
+            gateway=gateway,
+        )
+    except NoBYOKConfiguredError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except AIGatewayError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"No se pudo procesar la respuesta del modelo BYOK: {exc}",
+        ) from exc
+
+    return ProactiveIngestResponse(**result)
+

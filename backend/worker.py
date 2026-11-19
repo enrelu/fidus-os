@@ -1,7 +1,8 @@
-"""Worker base de FidusOS v2 (heartbeat en Redis + cola fidus:jobs para tareas asíncronas)."""
+"""Worker de FidusOS v2 (heartbeat en Redis, cola fidus:jobs y Radar Comercial periódico)."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -9,12 +10,20 @@ import signal
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 
 import redis
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
+from sqlmodel import Session
 
+from ai.gateway import AIGateway
+from ai.proactive import (
+    ingest_free_text_for_tenant,
+    list_active_tenant_ids_with_byok,
+    qualify_lead_for_tenant,
+    run_commercial_radar_for_tenant,
+)
 from core.config import Settings, get_settings
 from core.database import get_engine
 
@@ -22,6 +31,7 @@ logger = logging.getLogger("fidus.worker")
 
 HEARTBEAT_KEY = "fidus:worker:heartbeat"
 JOBS_QUEUE_KEY = "fidus:jobs"
+RADAR_LAST_RUN_KEY_PREFIX = "fidus:radar:tenant"
 DEFAULT_BLPOP_TIMEOUT_SECONDS = 2
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 15
 DEFAULT_HEARTBEAT_TTL_SECONDS = 45
@@ -33,8 +43,69 @@ def _handle_ping_job(payload: dict[str, Any], _engine: Engine, _redis_client: An
     return {"status": "pong", "echo": payload.get("echo")}
 
 
+def _handle_qualify_lead_job(
+    payload: dict[str, Any],
+    engine: Engine,
+    _redis_client: Any,
+    *,
+    gateway: Optional[AIGateway] = None,
+) -> dict[str, Any]:
+    tenant_id = int(payload["tenant_id"])
+    lead_id = int(payload["lead_id"])
+    with Session(engine) as session:
+        return asyncio.run(
+            qualify_lead_for_tenant(session, tenant_id, lead_id, gateway=gateway)
+        )
+
+
+def _handle_commercial_radar_job(
+    payload: dict[str, Any],
+    engine: Engine,
+    _redis_client: Any,
+    *,
+    gateway: Optional[AIGateway] = None,
+) -> dict[str, Any]:
+    tenant_id = int(payload["tenant_id"])
+    stale_days = int(payload.get("stale_days", 7))
+    with Session(engine) as session:
+        return asyncio.run(
+            run_commercial_radar_for_tenant(
+                session,
+                tenant_id,
+                stale_days=stale_days,
+                gateway=gateway,
+            )
+        )
+
+
+def _handle_ingest_text_job(
+    payload: dict[str, Any],
+    engine: Engine,
+    _redis_client: Any,
+    *,
+    gateway: Optional[AIGateway] = None,
+) -> dict[str, Any]:
+    tenant_id = int(payload["tenant_id"])
+    text_value = str(payload.get("text", ""))
+    raw_org_id = payload.get("organization_id")
+    org_id = int(raw_org_id) if raw_org_id is not None else None
+    with Session(engine) as session:
+        return asyncio.run(
+            ingest_free_text_for_tenant(
+                session,
+                tenant_id,
+                text_value,
+                organization_id=org_id,
+                gateway=gateway,
+            )
+        )
+
+
 DEFAULT_JOB_HANDLERS: dict[str, JobHandler] = {
     "ping": _handle_ping_job,
+    "proactive.qualify_lead": _handle_qualify_lead_job,
+    "proactive.commercial_radar": _handle_commercial_radar_job,
+    "proactive.ingest_text": _handle_ingest_text_job,
 }
 
 
@@ -150,10 +221,7 @@ def process_raw_job(
     registry = handlers if handlers is not None else DEFAULT_JOB_HANDLERS
     handler = registry.get(job_type)
     if handler is None:
-        logger.warning(
-            "Tipo de job '%s' recibido sin handler registrado (reservado para workers proactivos Hito 5).",
-            job_type,
-        )
+        logger.warning("Tipo de job '%s' recibido sin handler registrado.", job_type)
         return False
 
     payload = job_data.get("payload") if isinstance(job_data.get("payload"), dict) else {}
@@ -178,13 +246,21 @@ class WorkerRunner:
         handlers: dict[str, JobHandler] | None = None,
         blpop_timeout: int = DEFAULT_BLPOP_TIMEOUT_SECONDS,
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
+        radar_interval: Optional[int] = None,
+        gateway: Optional[AIGateway] = None,
     ) -> None:
         self.settings = settings or get_settings()
         self.engine = engine or get_engine(self.settings.DATABASE_URL)
         self.redis_client = redis_client or redis.from_url(self.settings.REDIS_URL, decode_responses=True)
+        self.gateway = gateway
         self.handlers = handlers if handlers is not None else dict(DEFAULT_JOB_HANDLERS)
         self.blpop_timeout = blpop_timeout
         self.heartbeat_interval = heartbeat_interval
+        self.radar_interval = (
+            self.settings.PROACTIVE_RADAR_INTERVAL_SECONDS
+            if radar_interval is None
+            else radar_interval
+        )
         self.stop_event = threading.Event()
         self.processed_jobs = 0
 
@@ -198,7 +274,6 @@ class WorkerRunner:
         if not item:
             return False
 
-        # redis-py devuelve una tupla (key, value)
         raw_value = item[1] if isinstance(item, (tuple, list)) and len(item) >= 2 else item
         ok = process_raw_job(
             raw_value,
@@ -209,6 +284,49 @@ class WorkerRunner:
         if ok:
             self.processed_jobs += 1
         return ok
+
+    def run_periodic_radar_tick(self) -> int:
+        """Ejecuta el Radar Comercial para tenants con BYOK respetando la ventana en Redis."""
+        if self.radar_interval <= 0:
+            return 0
+
+        executed = 0
+        with Session(self.engine) as session:
+            tenant_ids = list_active_tenant_ids_with_byok(session)
+
+        for tenant_id in tenant_ids:
+            if self.stop_event.is_set():
+                break
+            lock_key = f"{RADAR_LAST_RUN_KEY_PREFIX}:{tenant_id}:last_run"
+            if self.redis_client.get(lock_key) is not None:
+                continue
+
+            try:
+                with Session(self.engine) as session:
+                    result = asyncio.run(
+                        run_commercial_radar_for_tenant(
+                            session,
+                            tenant_id,
+                            stale_days=7,
+                            gateway=self.gateway,
+                            require_byok=False,
+                        )
+                    )
+                self.redis_client.set(
+                    lock_key,
+                    datetime.now(timezone.utc).isoformat(),
+                    ex=int(self.radar_interval),
+                )
+                executed += 1
+                logger.info(
+                    "Radar periódico ejecutado para tenant %d (findings=%s).",
+                    tenant_id,
+                    result.get("findings_count", 0),
+                )
+            except Exception:
+                logger.exception("Error ejecutando radar periódico para tenant %d.", tenant_id)
+
+        return executed
 
     def run(
         self,
@@ -222,12 +340,14 @@ class WorkerRunner:
         wait_for_redis(self.redis_client, max_attempts=max_connect_attempts, base_delay=base_delay)
 
         last_heartbeat = 0.0
+        last_radar_check = 0.0
         iterations = 0
 
         logger.info(
-            "FidusOS v2 Worker iniciado (env=%s, cola=%s).",
+            "FidusOS v2 Worker iniciado (env=%s, cola=%s, radar_interval=%ss).",
             self.settings.ENVIRONMENT,
             JOBS_QUEUE_KEY,
+            self.radar_interval,
         )
 
         while not self.stop_event.is_set():
@@ -239,6 +359,13 @@ class WorkerRunner:
                     processed_jobs=self.processed_jobs,
                 )
                 last_heartbeat = now
+
+            if self.radar_interval > 0 and now - last_radar_check >= min(float(self.radar_interval), 60.0):
+                try:
+                    self.run_periodic_radar_tick()
+                except Exception as exc:
+                    logger.warning("No se pudo comprobar el radar periódico en este ciclo: %s", exc)
+                last_radar_check = now
 
             try:
                 self.run_once()

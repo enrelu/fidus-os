@@ -5,13 +5,14 @@ import {
   Pencil,
   Plus,
   ShieldCheck,
+  Sparkles,
   Target,
   Trash2,
   UserPlus,
   Users,
   X,
 } from "lucide-react";
-import { ApiError, crmApi } from "../api/client";
+import { aiApi, ApiError, crmApi } from "../api/client";
 import type { Client, Lead, Opportunity, Organization, Task } from "../types/api";
 import { formatDateTimeEs, formatEur } from "../utils/format";
 
@@ -29,6 +30,8 @@ export const CrmPage: React.FC = () => {
   const [tab, setTab] = useState<CrmTab>("organizations");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [hasDefaultByok, setHasDefaultByok] = useState(false);
 
   const [organizations, setOrganizations] = useState<Organization[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
@@ -95,18 +98,20 @@ export const CrmPage: React.FC = () => {
     setLoading(true);
     setError(null);
     try {
-      const [orgs, clis, lds, opps, tks] = await Promise.all([
+      const [orgs, clis, lds, opps, tks, proactive] = await Promise.all([
         crmApi.listOrganizations(),
         crmApi.listClients(),
         crmApi.listLeads(),
         crmApi.listOpportunities(),
         crmApi.listTasks(),
+        aiApi.getProactiveStatus().catch(() => null),
       ]);
       setOrganizations(orgs);
       setClients(clis);
       setLeads(lds);
       setOpportunities(opps);
       setTasks(tks);
+      setHasDefaultByok(Boolean(proactive?.has_default_byok));
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "Error al cargar los datos del CRM.");
     } finally {
@@ -243,6 +248,7 @@ export const CrmPage: React.FC = () => {
     e.preventDefault();
     setSaving(true);
     setError(null);
+    setNotice(null);
     try {
       if (tab === "organizations") {
         const payload = {
@@ -279,8 +285,16 @@ export const CrmPage: React.FC = () => {
           status: leadForm.status,
           score: leadForm.score !== "" ? Number(leadForm.score) : null,
         };
-        if (editingId) await crmApi.updateLead(editingId, payload);
-        else await crmApi.createLead(payload);
+        if (editingId) {
+          await crmApi.updateLead(editingId, payload);
+        } else {
+          await crmApi.createLead(payload);
+          if (hasDefaultByok) {
+            setNotice(
+              "Lead guardado. El agente BYOK lo está analizando para proponer seguimiento en Supervisión HITL."
+            );
+          }
+        }
       } else if (tab === "opportunities") {
         const payload = {
           organization_id: oppForm.organization_id ? Number(oppForm.organization_id) : null,
@@ -371,6 +385,13 @@ export const CrmPage: React.FC = () => {
       {error && (
         <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
           {error}
+        </div>
+      )}
+
+      {notice && (
+        <div className="flex items-start gap-2 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 text-sm text-indigo-900">
+          <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-indigo-600" />
+          <span>{notice}</span>
         </div>
       )}
 

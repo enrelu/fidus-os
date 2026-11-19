@@ -126,7 +126,18 @@ Los ejecutores soportados en `ai/routes.py` (`create_task`, `create_lead`, `upda
 
 ---
 
-## 6. Migraciones y base de datos
+## 6. Motor Proactivo de Agentes (`ai/proactive.py`, `ai/dispatcher.py`, `worker.py`)
+
+FidusOS v2 combina ejecución reactiva vía MCP con un **Motor Proactivo autónomo** respaldado por el proveedor BYOK de cada tenant:
+
+- **Auto-cualificación de Leads**: al crear un `Lead` (`POST /api/v1/crm/leads`), `enqueue_proactive_job` encola `proactive.qualify_lead` en Redis (`fidus:jobs`) —o lo ejecuta vía `BackgroundTasks` en desarrollo local si Redis no está activo— para puntuar el lead, resumirlo y proponer la primera tarea de seguimiento como `AgentAction` (`pending_approval`).
+- **Radar Comercial Proactivo**: escanea oportunidades abiertas sin `ActivityLog` reciente, leads `new` sin atender y tareas vencidas, generando un *briefing* ejecutivo y acciones propuestas deduplicadas (ejecutable bajo demanda desde `/api/v1/ai/proactive/radar` o de forma periódica en `worker.py` mediante `PROACTIVE_RADAR_INTERVAL_SECONDS`).
+- **Ingesta de Texto Libre**: convierte notas de reuniones, correos o llamadas (`/api/v1/ai/proactive/ingest`) en múltiples `AgentAction` validadas contra las entidades existentes del tenant.
+- **Resiliencia y control humano**: todas las respuestas JSON del LLM (incluidos bloques ```` ```json ````) se validan con Pydantic y cualquier cambio propuesto queda en `pending_approval` hasta la aprobación humana en Supervisión HITL.
+
+---
+
+## 7. Migraciones y base de datos
 
 - **Desarrollo**: SQLite (`sqlite:///./fidus_dev.db`) para iteración rápida sin dependencias externas.
-- **Producción**: PostgreSQL mediante `DATABASE_URL` y migraciones versionadas con **Alembic** (`backend/core/db_migrations.py` y `backend/migrations/`).
+- **Producción**: PostgreSQL 16 mediante `DATABASE_URL` y migraciones versionadas con **Alembic** (`backend/core/db_migrations.py` y `backend/migrations/`).

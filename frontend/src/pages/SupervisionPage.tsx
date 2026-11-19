@@ -1,16 +1,29 @@
 import React, { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Bot,
   Check,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
+  Cpu,
   Play,
+  Radar,
   RefreshCw,
+  Send,
   ShieldAlert,
+  Sparkles,
   XCircle,
 } from "lucide-react";
-import { aiApi, ApiError } from "../api/client";
-import type { AgentAction, AgentActionStatus } from "../types/api";
+import { aiApi, ApiError, crmApi } from "../api/client";
+import type {
+  AgentAction,
+  AgentActionStatus,
+  Organization,
+  ProactiveRadarResponse,
+  ProactiveStatus,
+} from "../types/api";
 import { formatDateTimeEs } from "../utils/format";
 
 type FilterTab = AgentActionStatus | "all";
@@ -61,16 +74,33 @@ export const SupervisionPage: React.FC<SupervisionPageProps> = ({ onPendingCount
   const [notesById, setNotesById] = useState<Record<number, string>>({});
   const [busyId, setBusyId] = useState<number | null>(null);
 
+  // Estado del Motor Proactivo BYOK (Hito 5)
+  const [proactiveStatus, setProactiveStatus] = useState<ProactiveStatus | null>(null);
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [radarRunning, setRadarRunning] = useState(false);
+  const [radarResult, setRadarResult] = useState<ProactiveRadarResponse | null>(null);
+  const [radarExpanded, setRadarExpanded] = useState(true);
+
+  // Ingesta libre
+  const [ingestText, setIngestText] = useState("");
+  const [ingestOrgId, setIngestOrgId] = useState("");
+  const [ingesting, setIngesting] = useState(false);
+  const [ingestSummary, setIngestSummary] = useState<string | null>(null);
+
   const loadActions = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const [filtered, pending] = await Promise.all([
+      const [filtered, pending, statusInfo, orgs] = await Promise.all([
         aiApi.listAgentActions(activeTab === "all" ? undefined : activeTab),
         aiApi.listAgentActions("pending_approval"),
+        aiApi.getProactiveStatus().catch(() => null),
+        crmApi.listOrganizations().catch(() => [] as Organization[]),
       ]);
       setActions(filtered);
       onPendingCountChange(pending.length);
+      if (statusInfo) setProactiveStatus(statusInfo);
+      setOrganizations(orgs);
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "Error al cargar acciones de agentes.");
     } finally {
@@ -112,6 +142,52 @@ export const SupervisionPage: React.FC<SupervisionPageProps> = ({ onPendingCount
     }
   };
 
+  const handleRunRadar = async () => {
+    setRadarRunning(true);
+    setError(null);
+    setFeedback(null);
+    try {
+      const res = await aiApi.runProactiveRadar(7);
+      setRadarResult(res);
+      setRadarExpanded(true);
+      setFeedback(
+        res.created_actions.length > 0
+          ? `Radar Comercial completado: ${res.created_actions.length} nuevas acciones propuestas para revisión.`
+          : "Radar Comercial completado sin nuevas propuestas pendientes."
+      );
+      await loadActions();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : "No se pudo ejecutar el Radar Comercial.");
+    } finally {
+      setRadarRunning(false);
+    }
+  };
+
+  const handleIngestSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ingestText.trim()) return;
+    setIngesting(true);
+    setError(null);
+    setFeedback(null);
+    setIngestSummary(null);
+    try {
+      const res = await aiApi.ingestProactiveText({
+        text: ingestText.trim(),
+        organization_id: ingestOrgId ? Number(ingestOrgId) : null,
+      });
+      setIngestText("");
+      setIngestSummary(res.summary);
+      setFeedback(
+        `Análisis completado: se han propuesto ${res.created_actions.length} acciones en la bandeja HITL.`
+      );
+      await loadActions();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.detail : "No se pudo analizar el texto con el modelo BYOK.");
+    } finally {
+      setIngesting(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -120,19 +196,177 @@ export const SupervisionPage: React.FC<SupervisionPageProps> = ({ onPendingCount
             Supervisión Human-in-the-Loop
           </h1>
           <p className="mt-1 text-sm text-slate-600">
-            Revisa, aprueba o rechaza las acciones propuestas por los agentes MCP y workers antes de modificar datos del CRM.
+            Revisa, aprueba o rechaza las acciones propuestas por los agentes MCP y el motor proactivo BYOK antes de modificar datos del CRM.
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => void loadActions()}
-          className="inline-flex items-center gap-2 self-start rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 shadow-xs transition hover:bg-slate-50"
-        >
-          <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
-          Actualizar
-        </button>
+        <div className="flex flex-wrap items-center gap-2 self-start">
+          <button
+            type="button"
+            disabled={radarRunning || (proactiveStatus !== null && !proactiveStatus.has_default_byok)}
+            onClick={() => void handleRunRadar()}
+            className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-3.5 py-2 text-sm font-semibold text-white shadow-xs transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Radar className={`h-4 w-4 ${radarRunning ? "animate-spin" : ""}`} />
+            {radarRunning ? "Analizando pipeline..." : "Ejecutar Radar Comercial"}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void loadActions()}
+            className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-sm font-medium text-slate-700 shadow-xs transition hover:bg-slate-50"
+          >
+            <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            Actualizar
+          </button>
+        </div>
       </div>
+
+      {/* Banner de estado del Motor Proactivo */}
+      {proactiveStatus && (
+        <div
+          className={`flex flex-col gap-3 rounded-2xl border px-4 py-3.5 sm:flex-row sm:items-center sm:justify-between ${
+            proactiveStatus.has_default_byok
+              ? "border-indigo-200 bg-indigo-50/70 text-indigo-950"
+              : "border-amber-200 bg-amber-50 text-amber-950"
+          }`}
+        >
+          <div className="flex items-start gap-3">
+            <Cpu className="mt-0.5 h-5 w-5 shrink-0" />
+            <div className="text-xs sm:text-sm">
+              {proactiveStatus.has_default_byok ? (
+                <div>
+                  <span className="font-semibold">Motor Proactivo BYOK activo:</span>{" "}
+                  <span className="font-mono font-medium">
+                    {proactiveStatus.default_provider} / {proactiveStatus.default_model}
+                  </span>
+                  <span className="ml-2 text-xs text-indigo-700">
+                    · Los nuevos leads se cualifican automáticamente para revisión HITL.
+                  </span>
+                </div>
+              ) : (
+                <div>
+                  <span className="font-semibold">Falta configurar tu proveedor BYOK:</span>{" "}
+                  Activa una API key (OpenAI, Anthropic, Gemini, Ollama...) para habilitar cualificación de leads, Radar Comercial e ingesta de notas.
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${
+                proactiveStatus.worker_online
+                  ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                  : "border-slate-200 bg-white text-slate-700"
+              }`}
+            >
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  proactiveStatus.worker_online ? "bg-emerald-500" : "bg-slate-400"
+                }`}
+              />
+              {proactiveStatus.worker_online ? "Worker Redis conectado" : "Modo ejecución local"}
+            </span>
+
+            {!proactiveStatus.has_default_byok && (
+              <Link
+                to="/configuracion-ia"
+                className="inline-flex items-center rounded-lg bg-amber-900 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-amber-800"
+              >
+                Configurar BYOK
+              </Link>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Briefing colapsable del Radar Comercial */}
+      {radarResult && (
+        <div className="rounded-2xl border border-indigo-200 bg-white p-4 shadow-xs">
+          <button
+            type="button"
+            onClick={() => setRadarExpanded((prev) => !prev)}
+            className="flex w-full items-center justify-between text-left"
+          >
+            <div className="flex items-center gap-2">
+              <Radar className="h-4 w-4 text-indigo-600" />
+              <span className="text-sm font-semibold text-slate-900">
+                Briefing del Radar Comercial
+              </span>
+              <span className="rounded-full bg-indigo-50 px-2 py-0.5 text-xs font-medium text-indigo-700">
+                {radarResult.findings_count} señales · {radarResult.created_actions.length} propuestas nuevas
+              </span>
+            </div>
+            {radarExpanded ? (
+              <ChevronUp className="h-4 w-4 text-slate-500" />
+            ) : (
+              <ChevronDown className="h-4 w-4 text-slate-500" />
+            )}
+          </button>
+
+          {radarExpanded && (
+            <p className="mt-3 border-t border-slate-100 pt-3 text-sm text-slate-700 whitespace-pre-line">
+              {radarResult.briefing}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Caja de Ingesta Libre */}
+      <form
+        onSubmit={(e) => void handleIngestSubmit(e)}
+        className="rounded-2xl border border-slate-200 bg-white p-4 shadow-xs space-y-3"
+      >
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-4 w-4 text-indigo-600" />
+          <h2 className="text-sm font-semibold text-slate-900">
+            Entrada libre del agente (Notas / Email / Llamada)
+          </h2>
+        </div>
+
+        <textarea
+          rows={3}
+          value={ingestText}
+          onChange={(e) => setIngestText(e.target.value)}
+          placeholder="Pega aquí notas de una reunión, un correo reenviado o un resumen de llamada/WhatsApp. El agente BYOK propondrá tareas, leads o actualizaciones de oportunidades para tu aprobación..."
+          className="w-full rounded-xl border border-slate-300 px-3 py-2 text-sm text-slate-900 placeholder-slate-400 focus:border-indigo-500 focus:outline-none"
+        />
+
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <select
+            value={ingestOrgId}
+            onChange={(e) => setIngestOrgId(e.target.value)}
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs text-slate-700 focus:border-indigo-500 focus:outline-none"
+          >
+            <option value="">Organización opcional (detección automática)...</option>
+            {organizations.map((org) => (
+              <option key={org.id} value={org.id}>
+                {org.name} {org.cif ? `(${org.cif})` : ""}
+              </option>
+            ))}
+          </select>
+
+          <button
+            type="submit"
+            disabled={
+              ingesting ||
+              !ingestText.trim() ||
+              (proactiveStatus !== null && !proactiveStatus.has_default_byok)
+            }
+            className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2 text-xs font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Send className="h-3.5 w-3.5" />
+            {ingesting ? "Analizando con BYOK..." : "Analizar y proponer acciones"}
+          </button>
+        </div>
+
+        {ingestSummary && (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs text-emerald-900">
+            <span className="font-semibold">Resumen extraído:</span> {ingestSummary}
+          </div>
+        )}
+      </form>
 
       <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-3">
         {STATUS_TABS.map((tab) => (
@@ -176,7 +410,7 @@ export const SupervisionPage: React.FC<SupervisionPageProps> = ({ onPendingCount
             No hay acciones en esta vista
           </h3>
           <p className="mt-1 text-xs text-slate-500">
-            Cuando un agente conectado vía MCP proponga cambios con <code className="font-mono">proponer_accion</code>, aparecerán aquí para tu aprobación.
+            Cuando un agente MCP o el motor proactivo BYOK propongan cambios, aparecerán aquí para tu aprobación.
           </p>
         </div>
       ) : (

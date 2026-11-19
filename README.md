@@ -8,10 +8,10 @@ En lugar de acoplar funciones de IA opacas en un SaaS cerrado, FidusOS v2 sitúa
 
 ## Principios clave
 
-- **Agent-First & Human-in-the-Loop**: Los agentes de IA proponen acciones (`AgentAction`) que quedan registradas y requieren aprobación humana antes de ejecutarse sobre datos sensibles del CRM, con auditoría completa en `ActivityLog` (`actor_type`: `human` / `agent`, `model_used`).
+- **Agent-First, Proactivo & Human-in-the-Loop**: Los agentes externos (MCP) y el **Motor Proactivo BYOK** (cualificación automática de leads, Radar Comercial periódico e ingesta libre de notas/emails/llamadas) proponen acciones (`AgentAction`) que quedan registradas y requieren aprobación humana antes de ejecutarse sobre datos sensibles del CRM, con auditoría completa en `ActivityLog` (`actor_type`: `human` / `agent`, `model_used`).
 - **Arquitectura de IA Dual (MCP + BYOK)**:
   - **MCP Server nativo (`/mcp`)**: Expone herramientas CRM sobre **Streamable HTTP** autenticado por `AgentApiKey` para conectar tus propios clientes o suscripciones (Claude, ChatGPT, Cursor, OpenClaw).
-  - **BYOK / BYO-Model interno**: Cada tenant configura sus propias API keys o modelos locales (**OpenAI, Anthropic, Google Gemini, OpenRouter, Mistral, Ollama / vLLM** compatible con OpenAI) para tareas en segundo plano (resúmenes, borradores, detección de señales y briefings).
+  - **BYOK / BYO-Model interno**: Cada tenant configura sus propias API keys o modelos locales (**OpenAI, Anthropic, Google Gemini, OpenRouter, Mistral, Ollama / vLLM** compatible con OpenAI) para el motor proactivo en segundo plano (cualificación, radar de pipeline, ingesta de texto libre y briefings).
 - **Multi-tenant estricto**: Aislamiento por `tenant_id` en base de datos, autenticación JWT y validación estricta de referencias entre entidades.
 - **Adaptado al mercado español**:
   - Campos fiscales nativos en organizaciones (`cif`, `razon_social`, `direccion_fiscal`).
@@ -29,7 +29,7 @@ En lugar de acoplar funciones de IA opacas en un SaaS cerrado, FidusOS v2 sitúa
 - **Seguridad**: `cryptography` (Fernet), `PyJWT`, `bcrypt`
 - **IA / Gateway**: `httpx` asíncrono multi-proveedor (OpenAI, Anthropic, Gemini, OpenRouter, Mistral, Ollama / OpenAI-compatible)
 - **Testing**: `pytest` + `httpx` / `TestClient`
-- **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS v4 (supervisión *Human-in-the-Loop*, auditoría de actividad, ajustes BYOK/MCP y CRM operativo)
+- **Frontend**: React 18 + TypeScript + Vite + Tailwind CSS v4 (supervisión *Human-in-the-Loop*, radar/ingesta proactiva, auditoría de actividad, ajustes BYOK/MCP y CRM operativo)
 - **Self-Hosting**: Docker + Docker Compose v2 + Nginx (proxy inverso para SPA, `/api/` y `/mcp`)
 
 ---
@@ -54,10 +54,10 @@ fidus-os/
 │   ├── entrypoint.sh        # Validación de claves en producción + alembic upgrade head
 │   ├── alembic.ini          # Configuración de migraciones Alembic
 │   ├── main.py              # Entrada principal FastAPI + montaje /mcp
-│   ├── worker.py            # Worker base Redis (heartbeat + cola fidus:jobs)
+│   ├── worker.py            # Worker Redis (heartbeat, cola fidus:jobs y Radar periódico)
 │   ├── requirements.txt     # Dependencias Python 3.12
 │   ├── core/                # Base de datos, migraciones, cifrado, auth y modelos
-│   ├── ai/                  # Gateway BYOK multi-proveedor, rutas BYOK y acciones de agentes
+│   ├── ai/                  # Gateway BYOK, motor proactivo, dispatcher híbrido y HITL
 │   ├── crm/                 # Endpoints base multi-tenant del CRM
 │   ├── mcp_server/          # Servidor MCP nativo (/mcp Streamable HTTP + stdio)
 │   ├── migrations/          # Historial de migraciones Alembic
@@ -68,7 +68,7 @@ fidus-os/
     ├── nginx.conf           # Proxy inverso /api, /mcp, /health + SPA fallback
     ├── package.json         # Dependencias React + TypeScript + Vite + Tailwind v4
     ├── vite.config.ts       # Proxy /api y /mcp hacia http://127.0.0.1:8000
-    └── src/                 # Vistas HITL, Auditoría, Configuración IA (BYOK+MCP) y CRM
+    └── src/                 # Vistas HITL + Proactividad, Auditoría, BYOK+MCP y CRM
 ```
 
 ---

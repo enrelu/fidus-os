@@ -5,10 +5,13 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel, EmailStr, Field as PydanticField
 from sqlmodel import Session, select
 
+from ai.dispatcher import enqueue_proactive_job
+from ai.gateway import AIGateway
+from ai.routes import get_ai_gateway
 from core.auth import require_tenant_user
 from core.database import get_session
 from core.models import (
@@ -323,6 +326,7 @@ class LeadCreate(BaseModel):
     status: str = PydanticField(default="new", max_length=50)
     score: Optional[int] = PydanticField(default=None, ge=0, le=100)
     notes: Optional[str] = None
+    skip_ai_qualification: bool = False
 
 
 class LeadUpdate(BaseModel):
@@ -354,8 +358,10 @@ def list_leads(
 @router.post("/leads", response_model=Lead, status_code=status.HTTP_201_CREATED)
 def create_lead(
     payload: LeadCreate,
+    background_tasks: BackgroundTasks,
     current_user: User = Depends(require_tenant_user),
     session: Session = Depends(get_session),
+    gateway: AIGateway = Depends(get_ai_gateway),
 ) -> Lead:
     _assert_fk_owned(session, Organization, payload.organization_id, current_user.tenant_id, "organization_id")
     lead = Lead(
@@ -381,6 +387,18 @@ def create_lead(
     )
     session.commit()
     session.refresh(lead)
+
+    if not payload.skip_ai_qualification and lead.id is not None:
+        bind = session.get_bind()
+        target_engine = bind.engine if hasattr(bind, "engine") else bind
+        enqueue_proactive_job(
+            "proactive.qualify_lead",
+            {"tenant_id": current_user.tenant_id, "lead_id": lead.id},
+            background_tasks=background_tasks,
+            engine=target_engine,
+            gateway=gateway,
+        )
+
     return lead
 
 

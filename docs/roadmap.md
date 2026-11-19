@@ -36,10 +36,15 @@ Hoja de ruta evolutiva de **FidusOS v2** hacia un CRM **Agent-First / AI-Ready**
 - Validación estricta de claves (`ENCRYPTION_KEY` y `JWT_SECRET_KEY`) en `ENVIRONMENT=production` para impedir arranques inseguros.
 - Guía completa de despliegue en [`docs/self-hosting.md`](self-hosting.md), [`SECURITY.md`](../SECURITY.md), [`CONTRIBUTING.md`](../CONTRIBUTING.md) y licencia **AGPLv3** ([`LICENSE`](../LICENSE)).
 
-## Hito 5 — Motor Proactivo de Agentes (Watchers + Radar con BYOK) y Cumplimiento RGPD Ampliado *(Siguiente)*
-- Evolución del worker en Redis (`fidus:jobs`) usando el `AIProviderConfig` por defecto de cada tenant:
-  - *Watchers* por evento y *Radar Comercial* programado para detectar oportunidades estancadas o señales de riesgo.
-  - Ingesta de notas libres y resúmenes automáticos de cuentas/oportunidades.
-  - Borradores de seguimiento comercial propuestos como `AgentAction` (siempre bajo supervisión HITL).
-  - Briefings diarios/semanales para responsables comerciales.
-- Herramientas de exportación y borrado RGPD/LOPDGDD por cliente y tenant, junto con políticas de retención de `ActivityLog`.
+## Hito 5 — Motor Proactivo de Agentes (BYOK Autónomo + Radar Comercial + Ingesta Libre) *(Completado)*
+- **Motor proactivo BYOK (`backend/ai/proactive.py`)**:
+  - **Auto-cualificación de Leads** (`qualify_lead_for_tenant`) disparada automáticamente tras `POST /api/v1/crm/leads`: asigna `score`, añade resumen/borrador en `notes`, registra `ActivityLog` y propone tarea de seguimiento en `AgentAction` (`pending_approval`).
+  - **Radar Comercial Proactivo** (`run_commercial_radar_for_tenant`): detecta oportunidades estancadas, leads `new` sin atender y tareas vencidas, generando un *briefing* ejecutivo y propuestas HITL sin duplicados.
+  - **Ingesta de texto libre** (`ingest_free_text_for_tenant`): transforma notas de reunión, correos o llamadas en propuestas validadas (`create_lead`, `create_task`, `update_opportunity`).
+- **Dispatcher híbrido (`backend/ai/dispatcher.py`) + Worker periódico (`backend/worker.py`)**: encola en Redis (`fidus:jobs`) cuando está disponible, con fallback local vía FastAPI `BackgroundTasks` en desarrollo y Radar periódico configurable (`PROACTIVE_RADAR_INTERVAL_SECONDS`).
+- **Supervisión HITL proactiva en Frontend**: banner de estado BYOK/Worker, ejecución manual del Radar Comercial con *briefing* colapsable y caja de ingesta de texto libre en la pantalla principal.
+
+## Hito 6 — Cumplimiento RGPD Ampliado y Conectores *(Siguiente)*
+- Herramientas de exportación y borrado RGPD/LOPDGDD por cliente y tenant.
+- Políticas de retención de `ActivityLog` y auditoría ampliada.
+- Conectores de entrada adicionales (webhooks de correo/formularios web) hacia el motor proactivo.

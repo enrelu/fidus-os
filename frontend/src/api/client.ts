@@ -20,6 +20,10 @@ import type {
   OpportunityPayload,
   Organization,
   OrganizationPayload,
+  ProactiveIngestPayload,
+  ProactiveIngestResponse,
+  ProactiveRadarResponse,
+  ProactiveStatus,
   RegisterPayload,
   Task,
   TaskPayload,
@@ -170,6 +174,18 @@ export const aiApi = {
   revokeAgentKey: (keyId: number) =>
     request<void>(`/api/v1/ai/agent-keys/${keyId}`, {
       method: "DELETE",
+    }),
+
+  getProactiveStatus: () => request<ProactiveStatus>("/api/v1/ai/proactive/status"),
+  runProactiveRadar: (staleDays = 7) =>
+    request<ProactiveRadarResponse>("/api/v1/ai/proactive/radar", {
+      method: "POST",
+      body: JSON.stringify({ stale_days: staleDays }),
+    }),
+  ingestProactiveText: (payload: ProactiveIngestPayload) =>
+    request<ProactiveIngestResponse>("/api/v1/ai/proactive/ingest", {
+      method: "POST",
+      body: JSON.stringify(payload),
     }),
 };
 

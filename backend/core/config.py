@@ -33,6 +33,7 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str = "sqlite:///./fidus_dev.db"
     REDIS_URL: str = "redis://localhost:6379/0"
+    PROACTIVE_RADAR_INTERVAL_SECONDS: int = 3600
 
     ENCRYPTION_KEY: str = ""
     JWT_SECRET_KEY: str = ""
