@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import {
+  AlertTriangle,
   Bot,
   Check,
   CheckCircle2,
@@ -70,6 +71,7 @@ export const SupervisionPage: React.FC<SupervisionPageProps> = ({ onPendingCount
   const [actions, setActions] = useState<AgentAction[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<string | null>(null);
   const [notesById, setNotesById] = useState<Record<number, string>>({});
   const [busyId, setBusyId] = useState<number | null>(null);
@@ -86,6 +88,7 @@ export const SupervisionPage: React.FC<SupervisionPageProps> = ({ onPendingCount
   const [ingestOrgId, setIngestOrgId] = useState("");
   const [ingesting, setIngesting] = useState(false);
   const [ingestSummary, setIngestSummary] = useState<string | null>(null);
+  const [ingestHasActions, setIngestHasActions] = useState(true);
 
   const loadActions = useCallback(async () => {
     setLoading(true);
@@ -118,6 +121,7 @@ export const SupervisionPage: React.FC<SupervisionPageProps> = ({ onPendingCount
   ) => {
     setBusyId(actionId);
     setError(null);
+    setWarning(null);
     setFeedback(null);
     const note = notesById[actionId]?.trim() || undefined;
     try {
@@ -145,6 +149,7 @@ export const SupervisionPage: React.FC<SupervisionPageProps> = ({ onPendingCount
   const handleRunRadar = async () => {
     setRadarRunning(true);
     setError(null);
+    setWarning(null);
     setFeedback(null);
     try {
       const res = await aiApi.runProactiveRadar(7);
@@ -168,6 +173,7 @@ export const SupervisionPage: React.FC<SupervisionPageProps> = ({ onPendingCount
     if (!ingestText.trim()) return;
     setIngesting(true);
     setError(null);
+    setWarning(null);
     setFeedback(null);
     setIngestSummary(null);
     try {
@@ -175,11 +181,19 @@ export const SupervisionPage: React.FC<SupervisionPageProps> = ({ onPendingCount
         text: ingestText.trim(),
         organization_id: ingestOrgId ? Number(ingestOrgId) : null,
       });
-      setIngestText("");
       setIngestSummary(res.summary);
-      setFeedback(
-        `Análisis completado: se han propuesto ${res.created_actions.length} acciones en la bandeja HITL.`
-      );
+      if (res.created_actions.length > 0) {
+        setIngestText("");
+        setIngestHasActions(true);
+        setFeedback(
+          `Análisis completado: se han propuesto ${res.created_actions.length} acciones en la bandeja HITL. Pulsa «Aprobar y ejecutar» para aplicarlas en el CRM.`
+        );
+      } else {
+        setIngestHasActions(false);
+        setWarning(
+          "El modelo generó un resumen del texto, pero no devolvió acciones ejecutables válidas para la bandeja HITL. Revisa el texto o añade más detalle e inténtalo de nuevo."
+        );
+      }
       await loadActions();
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : "No se pudo analizar el texto con el modelo BYOK.");
@@ -362,8 +376,19 @@ export const SupervisionPage: React.FC<SupervisionPageProps> = ({ onPendingCount
         </div>
 
         {ingestSummary && (
-          <div className="rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2.5 text-xs text-emerald-900">
-            <span className="font-semibold">Resumen extraído:</span> {ingestSummary}
+          <div
+            className={`rounded-xl border px-3.5 py-2.5 text-xs ${
+              ingestHasActions
+                ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                : "border-amber-200 bg-amber-50 text-amber-900"
+            }`}
+          >
+            <span className="font-semibold">
+              {ingestHasActions
+                ? "Resumen extraído:"
+                : "Resumen extraído (sin acciones ejecutables válidas):"}
+            </span>{" "}
+            {ingestSummary}
           </div>
         )}
       </form>
@@ -389,6 +414,13 @@ export const SupervisionPage: React.FC<SupervisionPageProps> = ({ onPendingCount
         <div className="flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
           <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0" />
           <span>{error}</span>
+        </div>
+      )}
+
+      {warning && (
+        <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <span>{warning}</span>
         </div>
       )}
 

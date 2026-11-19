@@ -191,6 +191,26 @@ def _has_pending_action(
     return session.exec(stmt).first() is not None
 
 
+def _pick_non_empty_str(raw_payload: dict[str, Any], *keys: str) -> Optional[str]:
+    """Devuelve el primer valor string no vacío encontrado entre las claves candidatas."""
+    for key in keys:
+        val = raw_payload.get(key)
+        if val is None:
+            continue
+        text = str(val).strip()
+        if text:
+            return text
+    return None
+
+
+def _pick_first_defined(raw_payload: dict[str, Any], *keys: str) -> Any:
+    """Devuelve el primer valor distinto de None encontrado entre las claves candidatas."""
+    for key in keys:
+        if key in raw_payload and raw_payload[key] is not None:
+            return raw_payload[key]
+    return None
+
+
 def _build_validated_action(
     session: Session,
     *,
@@ -231,12 +251,15 @@ def _build_validated_action(
         if priority not in ALLOWED_TASK_PRIORITIES:
             priority = "medium"
 
+        task_title = _pick_non_empty_str(raw_payload, "title", "titulo", "título", "subject", "asunto")
+        task_description = _pick_non_empty_str(raw_payload, "description", "descripcion", "descripción")
+
         clean_payload: dict[str, Any] = {
-            "title": str(raw_payload.get("title") or "Seguimiento propuesto por agente")[:255],
+            "title": (task_title or "Seguimiento propuesto por agente")[:255],
             "priority": priority,
         }
-        if raw_payload.get("description"):
-            clean_payload["description"] = str(raw_payload["description"])
+        if task_description is not None:
+            clean_payload["description"] = task_description
         if org_id is not None:
             clean_payload["organization_id"] = org_id
         if opp_id is not None:
@@ -247,13 +270,31 @@ def _build_validated_action(
 
     elif item.action_type == "create_lead":
         org_id = _entity_exists_in_tenant(session, Organization, raw_payload.get("organization_id"), tenant_id)
-        full_name = str(raw_payload.get("full_name") or "").strip()
+        full_name = _pick_non_empty_str(
+            raw_payload,
+            "full_name",
+            "name",
+            "nombre",
+            "nombre_completo",
+            "lead_name",
+            "contact_name",
+        )
         if not full_name:
             return None
+
         clean_payload = {"full_name": full_name[:200]}
-        for opt_key in ("email", "phone", "company_name", "source", "notes"):
-            if raw_payload.get(opt_key):
-                clean_payload[opt_key] = str(raw_payload[opt_key])
+        synonym_map: dict[str, tuple[str, ...]] = {
+            "email": ("email", "correo"),
+            "phone": ("phone", "telefono", "teléfono", "movil", "móvil"),
+            "company_name": ("company_name", "company", "empresa"),
+            "source": ("source",),
+            "notes": ("notes", "notas"),
+        }
+        for canonical_key, aliases in synonym_map.items():
+            val = _pick_non_empty_str(raw_payload, *aliases)
+            if val is not None:
+                clean_payload[canonical_key] = val
+
         if org_id is not None:
             clean_payload["organization_id"] = org_id
         final_target_type = "lead"
@@ -268,9 +309,10 @@ def _build_validated_action(
         clean_payload = {}
         if raw_payload.get("stage") is not None:
             clean_payload["stage"] = str(raw_payload["stage"]).strip()
-        if raw_payload.get("amount_eur") is not None:
+        raw_amount = _pick_first_defined(raw_payload, "amount_eur", "amount", "importe")
+        if raw_amount is not None:
             try:
-                amount = float(raw_payload["amount_eur"])
+                amount = float(raw_amount)
                 if amount >= 0:
                     clean_payload["amount_eur"] = amount
             except (TypeError, ValueError):
@@ -282,8 +324,9 @@ def _build_validated_action(
                     clean_payload["probability"] = prob
             except (TypeError, ValueError):
                 pass
-        if raw_payload.get("notes") is not None:
-            clean_payload["notes"] = str(raw_payload["notes"])
+        raw_notes = _pick_first_defined(raw_payload, "notes", "notas")
+        if raw_notes is not None:
+            clean_payload["notes"] = str(raw_notes)
 
         if not clean_payload:
             return None
@@ -744,6 +787,10 @@ async def ingest_free_text_for_tenant(
                 "\"proposed_actions\": [{\"action_type\": \"create_task\" | \"create_lead\" | \"update_opportunity\", "
                 "\"target_entity_type\": \"task\" | \"lead\" | \"opportunity\", "
                 "\"target_entity_id\": <id entero o null>, \"payload\": {...}}]}. "
+                "Claves EXACTAS obligatorias para payload según action_type: "
+                "- create_lead: {\"full_name\" (obligatorio), \"email\"?, \"phone\"?, \"company_name\"?, \"source\"?, \"notes\"?, \"organization_id\"?}. "
+                "- create_task: {\"title\" (obligatorio), \"description\"?, \"priority\" (low|medium|high|urgent)?, \"organization_id\"?, \"opportunity_id\"?}. "
+                "- update_opportunity (requiere target_entity_id de oportunidad existente): {\"stage\"?, \"amount_eur\"?, \"probability\" (0-100)?, \"notes\"?}. "
                 "Usa los IDs reales de organizaciones y oportunidades del contexto cuando correspondan."
             ),
         },

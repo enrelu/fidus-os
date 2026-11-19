@@ -323,3 +323,125 @@ def test_free_text_ingest_parses_fenced_json_and_status_endpoint(
     # Verificar ActivityLog de ingesta
     activities = client.get("/api/v1/crm/activities?actor_type=agent", headers=tenant_a["headers"]).json()
     assert any(act["action"] == "proactive:ingest" and act["model_used"] == "gpt-4o" for act in activities)
+
+
+def test_free_text_ingest_normalizes_llm_payload_synonyms_and_executes_lead(
+    client: TestClient,
+    session: Session,
+    tenant_a: dict,
+) -> None:
+    _register_byok_openai(client, tenant_a["headers"], model_name="gemini-flash-lite-latest")
+
+    opp = client.post(
+        "/api/v1/crm/opportunities",
+        headers=tenant_a["headers"],
+        json={
+            "title": "Certificación ISO AENOR",
+            "amount_eur": 5000.0,
+            "stage": "qualification",
+            "probability": 25,
+        },
+    ).json()
+
+    llm_payload = {
+        "summary": "Detectado nuevo lead Paco Martinez de la empresa AENOR con teléfono 680909090.",
+        "proposed_actions": [
+            {
+                "action_type": "create_lead",
+                "target_entity_type": "lead",
+                "target_entity_id": None,
+                "payload": {
+                    "name": "Paco Martinez",
+                    "company": "AENOR",
+                    "telefono": "680909090",
+                    "correo": "paco@aenor.example",
+                    "notas": "Contacto entrante de prueba",
+                },
+            },
+            {
+                "action_type": "create_task",
+                "target_entity_type": "task",
+                "target_entity_id": None,
+                "payload": {
+                    "titulo": "Llamar a Paco Martinez (AENOR)",
+                    "descripcion": "Primer contacto comercial en frío.",
+                    "priority": "high",
+                },
+            },
+            {
+                "action_type": "update_opportunity",
+                "target_entity_type": "opportunity",
+                "target_entity_id": opp["id"],
+                "payload": {
+                    "importe": 7500,
+                },
+            },
+        ],
+    }
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        # Comprobamos también que el prompt incluya el esquema exacto esperado
+        req_body = json.loads(request.content.decode("utf-8"))
+        system_msg = req_body["messages"][0]["content"]
+        assert "full_name" in system_msg
+        assert "company_name" in system_msg
+        return httpx.Response(
+            200,
+            json={
+                "model": "gemini-flash-lite-latest",
+                "choices": [{"message": {"content": json.dumps(llm_payload, ensure_ascii=False)}}],
+            },
+        )
+
+    mock_gateway = AIGateway(transport=httpx.MockTransport(mock_handler))
+    client.app.dependency_overrides[get_ai_gateway] = lambda: mock_gateway  # type: ignore[attr-defined]
+    try:
+        ingest_resp = client.post(
+            "/api/v1/ai/proactive/ingest",
+            headers=tenant_a["headers"],
+            json={"text": "Nuevo lead -> Paco Martinez. empresa AENOR. Teléfono: 680909090"},
+        )
+        assert ingest_resp.status_code == 200, ingest_resp.text
+        data = ingest_resp.json()
+        assert len(data["created_actions"]) == 3
+    finally:
+        client.app.dependency_overrides.pop(get_ai_gateway, None)  # type: ignore[attr-defined]
+
+    lead_action, task_action, opp_action = data["created_actions"]
+
+    # 1. Validar normalización de create_lead
+    assert lead_action["action_type"] == "create_lead"
+    assert lead_action["payload"] == {
+        "full_name": "Paco Martinez",
+        "email": "paco@aenor.example",
+        "phone": "680909090",
+        "company_name": "AENOR",
+        "notes": "Contacto entrante de prueba",
+    }
+
+    # 2. Validar normalización de create_task y update_opportunity
+    assert task_action["payload"]["title"] == "Llamar a Paco Martinez (AENOR)"
+    assert task_action["payload"]["description"] == "Primer contacto comercial en frío."
+    assert opp_action["payload"]["amount_eur"] == 7500.0
+
+    # 3. Aprobar y ejecutar create_lead y verificar que el Lead se crea en BD con los campos normalizados
+    exec_resp = client.post(
+        f"/api/v1/ai/agent-actions/{lead_action['id']}/approve-and-execute",
+        headers=tenant_a["headers"],
+    )
+    assert exec_resp.status_code == 200, exec_resp.text
+    executed = exec_resp.json()
+    assert executed["status"] == "executed"
+    created_lead_id = executed["target_entity_id"]
+    assert created_lead_id is not None
+
+    session.expire_all()
+    lead_db = session.get(Lead, created_lead_id)
+    assert lead_db is not None
+    assert lead_db.tenant_id == tenant_a["tenant_id"]
+    assert lead_db.full_name == "Paco Martinez"
+    assert lead_db.company_name == "AENOR"
+    assert lead_db.phone == "680909090"
+    assert lead_db.email == "paco@aenor.example"
+    assert lead_db.notes == "Contacto entrante de prueba"
+
